@@ -5,27 +5,35 @@ blueprint:
 
 
     Monte progressivement la luminosité et la température de couleur pour simuler
-    un lever de soleil naturel. Idéal comme réveil doux.
+    un lever de soleil naturel. Scientifiquement calibré : rouge-orangé chaud →
+    blanc lumière du jour, courbe non-linéaire qui accélère vers la fin.
 
 
     ## ✨ Fonctionnalités
 
-    - **Heure modifiable** depuis un `input_datetime` sans toucher à l'automation
-    - **Interrupteur on/off** via un `input_boolean` (exposable dans HomeKit)
-    - **Courbe non-linéaire** : montée lente au début, accélère vers la fin (comme un vrai soleil)
-    - **Couleur** : part de rouge-orangé chaud (~2000 K) → blanc lumière du jour (~5500 K)
-    - **Abort intelligent** : si la lumière est éteinte manuellement pendant la montée, s'arrête proprement
-    - **Désactive le mode nuit** d'Adaptive Lighting avant de démarrer
-    - **Actions pré et post** optionnelles (ex: lancer une radio, envoyer une notif)
-    - **Sélection de jours** : tous les jours ou jours ouvrés seulement
+    - **Heure modifiable** au quotidien depuis un `input_datetime`
+    - **Interrupteur on/off** via `input_boolean` (exposable dans HomeKit)
+    - **Courbe non-linéaire** : lente au début, s'accélère (comme un vrai soleil)
+    - **Adaptive Lighting** : suspend AL proprement avant le lever via
+      `set_manual_control`, le reprend via `apply` à la fin — un seul champ à
+      renseigner, aucun toggle de switch
+    - **Abort intelligent** : si la lumière est éteinte manuellement, s'arrête
+    - **Actions pré et post** lever optionnelles
+    - **Sélection de jours** de la semaine
+
+
+    ## 🔬 Paramètres scientifiques par défaut
+
+    Durée 25 min · 2200 K → 5500 K · Luminosité 1% → 100%
+    (études circadiennes : montée douce chaud→froid favorise l'éveil naturel
+    et supprime la mélatonine résiduelle sans choc lumineux)
 
 
     ## 📋 Prérequis
 
-    - Un `input_datetime` (heure seule) pour l'heure de réveil
-    - Un `input_boolean` pour activer/désactiver (exposable dans HomeKit)
-    - Une lumière avec support de luminosité ET température de couleur
-
+    - `input_datetime` (heure seule) pour l'heure de réveil
+    - `input_boolean` pour activer/désactiver
+    - Lumière avec support luminosité + température de couleur
 
   domain: automation
   homeassistant:
@@ -41,8 +49,8 @@ blueprint:
         light_entity:
           name: Lumière cible
           description: >
-            La lumière (ou groupe de lumières) à faire monter progressivement.
-            Doit supporter la luminosité ET la température de couleur.
+            La lumière à faire monter. Doit supporter luminosité ET température
+            de couleur. Pour plusieurs lampes, crée un groupe de lumières.
           selector:
             entity:
               filter:
@@ -51,9 +59,10 @@ blueprint:
         alarm_time:
           name: Heure de réveil (input_datetime)
           description: >
-            Helper `input_datetime` (heure seule) qui définit l'heure de fin du
-            lever de soleil — c'est-à-dire l'heure à laquelle la lumière atteint
-            sa luminosité maximale. Modifiable depuis ton dashboard au quotidien.
+            Helper `input_datetime` réglé sur "heure seule" = heure à laquelle la
+            lumière atteint sa luminosité maximale. L'automation calcule
+            automatiquement le démarrage = heure réveil - durée. Modifiable
+            chaque soir depuis ton dashboard ou widget iOS.
           selector:
             entity:
               filter:
@@ -62,8 +71,8 @@ blueprint:
         enabled_boolean:
           name: Interrupteur on/off (input_boolean)
           description: >
-            Helper `input_boolean` pour activer ou désactiver le réveil. Expose-le
-            dans HomeKit pour un contrôle rapide depuis l'app Maison ou Siri.
+            Active ou désactive le réveil. Expose-le dans HomeKit pour un contrôle
+            rapide depuis Siri ("Dis Siri, active le réveil") ou l'app Maison.
           selector:
             entity:
               filter:
@@ -77,8 +86,8 @@ blueprint:
         duration_min:
           name: Durée du lever (minutes)
           description: >
-            Durée totale de la montée. L'automation démarre automatiquement
-            "durée" minutes AVANT l'heure de réveil, pour finir pile à l'heure.
+            Durée totale de la montée. Recommandation scientifique : 25 min.
+            L'automation démarre "durée" minutes AVANT l'heure de réveil.
           default: 25
           selector:
             number:
@@ -91,9 +100,8 @@ blueprint:
         start_brightness:
           name: Luminosité de départ (%)
           description: >
-            Luminosité initiale au démarrage du lever. Garder bas (1-3%) pour
-            un réveil très progressif. Certaines ampoules ne répondent pas en
-            dessous de 1-2%, monter à 5% si l'ampoule clignote au démarrage.
+            Luminosité initiale. Garder à 1-3% pour un début imperceptible.
+            Monter à 5% si l'ampoule ne répond pas aux valeurs très basses.
           default: 1
           selector:
             number:
@@ -104,8 +112,9 @@ blueprint:
 
         end_brightness:
           name: Luminosité finale (%)
-          description: Luminosité atteinte à la fin du lever.
-          default: 90
+          description: >
+            Luminosité atteinte à la fin. 100% recommandé pour un réveil énergisant.
+          default: 100
           selector:
             number:
               min: 20
@@ -116,9 +125,9 @@ blueprint:
         start_kelvin:
           name: Température de départ (Kelvin — chaud)
           description: >
-            Couleur au début du lever. 2000 K = rouge-orangé (comme un vrai lever
-            de soleil). Augmenter si votre lampe n'atteint pas des valeurs aussi
-            basses (vérifiable dans Paramètres → Appareils).
+            Couleur au début : 2200 K = rouge-orangé (lever de soleil naturel).
+            Science : partir chaud évite le choc lumineux et ne supprime pas
+            la mélatonine brutalement.
           default: 2200
           selector:
             number:
@@ -131,8 +140,9 @@ blueprint:
         end_kelvin:
           name: Température finale (Kelvin — lumière du jour)
           description: >
-            Couleur en fin de lever. 5500 K = blanc lumière du jour, naturel
-            et énergisant. 4000 K pour une fin plus douce.
+            Couleur en fin de lever : 5500 K = blanc lumière du jour.
+            Science : 5000-5500 K stimule l'éveil et supprime la mélatonine
+            résiduelle. Baisser à 4000 K pour une fin plus douce.
           default: 5500
           selector:
             number:
@@ -145,8 +155,8 @@ blueprint:
         step_interval:
           name: Intervalle entre chaque pas (secondes)
           description: >
-            Temps entre deux ajustements de luminosité. Valeurs recommandées :
-            Philips Hue → 10-15s. Plus court = plus fluide mais plus d'appels Zigbee.
+            Temps entre deux ajustements. Philips Hue : 10-15s recommandé.
+            Plus court = plus fluide, mais plus d'appels Zigbee.
           default: 15
           selector:
             number:
@@ -163,8 +173,7 @@ blueprint:
       input:
         days_of_week:
           name: Jours de la semaine
-          description: >
-            Jours où le réveil est actif. Laisser vide = tous les jours.
+          description: Laisser vide = tous les jours.
           default: []
           selector:
             select:
@@ -187,23 +196,31 @@ blueprint:
 
     # ─────────────────────────────────────────────────────
     section_adaptive:
-      name: 4️⃣ Adaptive Lighting
+      name: 4️⃣ Adaptive Lighting (optionnel)
       icon: mdi:theme-light-dark
       collapsed: true
       input:
-        adaptive_switch:
-          name: Interrupteur mode nuit Adaptive Lighting (optionnel)
+        al_switch:
+          name: Switch Adaptive Lighting de la lampe
           description: >
-            Si tu utilises Adaptive Lighting avec mode nuit, sélectionne ici
-            l'interrupteur `switch.adaptive_lighting_sleep_mode_*` de ta pièce.
-            Il sera désactivé juste avant le lever pour qu'AL n'interfère pas,
-            puis ré-activé selon tes préférences en post-action.
-            Laisser vide si pas de mode nuit AL.
+            Le switch principal AL de ta lampe cible, ex :
+            `switch.adaptive_lighting_chambre_armoire`.
+
+            Comment ça fonctionne : avant le lever, l'automation marque la lampe
+            en "contrôle manuel" via `adaptive_lighting.set_manual_control` — AL
+            reste actif mais cède le contrôle. À la fin du lever, AL reprend via
+            `adaptive_lighting.apply`. Propre, sans toggle de switches.
+
+            Le sleep mode est automatiquement désactivé avant le lever et
+            n'est PAS réactivé après (c'est le matin).
+
+            Laisser vide si pas d'Adaptive Lighting sur cette lampe.
           default: []
           selector:
             entity:
               filter:
                 - domain: switch
+                  integration: adaptive_lighting
 
     # ─────────────────────────────────────────────────────
     section_actions:
@@ -213,9 +230,7 @@ blueprint:
       input:
         pre_sunrise_actions:
           name: Actions avant le lever (optionnel)
-          description: >
-            Exécutées juste avant que la lumière commence à monter. Utile pour
-            désactiver le mode nuit AL, couper un store, etc.
+          description: Exécutées juste avant que la lumière commence à monter.
           default: []
           selector:
             action: {}
@@ -223,8 +238,9 @@ blueprint:
         post_sunrise_actions:
           name: Actions après le lever (optionnel)
           description: >
-            Exécutées une fois la luminosité maximale atteinte. Utile pour
-            lancer une radio, envoyer une notification, re-activer AL, etc.
+            Exécutées une fois la luminosité maximale atteinte, après que AL a
+            repris le contrôle. Ex : lancer un script de scène matinale, une
+            radio, une notification...
           default: []
           selector:
             action: {}
@@ -241,56 +257,63 @@ variables:
   days_of_week: !input days_of_week
   light_entity: !input light_entity
   alarm_time: !input alarm_time
-  enabled_boolean: !input enabled_boolean
-  # Nombre total de pas dans la montée
+  al_switch: !input al_switch
   total_steps: "{{ ((duration_min * 60) / step_interval) | int(1) }}"
-  # L'automation se déclenche "durée" minutes avant l'heure de réveil
-  # Le trigger calcule l'heure de démarrage dynamiquement depuis l'input_datetime
+  # Nom de la config entry AL déduit du switch (ex: switch.adaptive_lighting_chambre_armoire → chambre_armoire)
+  al_entity_name: >
+    {% if al_switch | default([]) | length > 0 %}
+      {{ al_switch | replace('switch.adaptive_lighting_', '') }}
+    {% else %}
+      none
+    {% endif %}
 
 trigger:
   - platform: template
-    # Se déclenche quand l'heure actuelle = heure de réveil - durée
     value_template: >
       {% set alarm = states(alarm_time) %}
       {% if alarm not in ['unknown', 'unavailable'] %}
-        {% set alarm_total = alarm[:5] %}
-        {% set h = alarm_total[:2] | int %}
-        {% set m = alarm_total[3:5] | int %}
-        {% set offset_min = duration_min | int %}
-        {% set start_total_min = (h * 60 + m - offset_min) %}
-        {% set start_h = ((start_total_min % 1440 + 1440) % 1440 // 60) | int %}
-        {% set start_m = ((start_total_min % 1440 + 1440) % 1440 % 60) | int %}
+        {% set h = alarm[:2] | int %}
+        {% set m = alarm[3:5] | int %}
+        {% set offset = duration_min | int %}
+        {% set start_total = (h * 60 + m - offset) %}
+        {% set start_h = ((start_total % 1440 + 1440) % 1440 // 60) | int %}
+        {% set start_m = ((start_total % 1440 + 1440) % 1440 % 60) | int %}
         {{ now().hour == start_h and now().minute == start_m and now().second < 30 }}
       {% else %}
         false
       {% endif %}
 
 condition:
-  # Vérifier que le boolean est activé
   - condition: state
     entity_id: !input enabled_boolean
     state: "on"
-  # Vérifier le jour de la semaine
   - condition: template
     value_template: >
       {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
 
 action:
-  # Désactiver le mode nuit Adaptive Lighting si configuré
+  # 1. Suspendre AL (set_manual_control) + désactiver sleep mode
   - if:
       - condition: template
-        value_template: "{{ adaptive_switch | default([]) | length > 0 }}"
+        value_template: "{{ al_entity_name != 'none' }}"
     then:
+      - action: adaptive_lighting.set_manual_control
+        data:
+          entity_id: !input al_switch
+          lights: !input light_entity
+          manual_control: true
+        alias: Suspendre AL (contrôle manuel)
       - action: switch.turn_off
         target:
-          entity_id: !input adaptive_switch
-        alias: Désactiver mode nuit AL
+          entity_id: "switch.adaptive_lighting_sleep_mode_{{ al_entity_name }}"
+        alias: Désactiver AL sleep mode
+        continue_on_error: true
 
-  # Actions pré-lever (optionnelles)
+  # 2. Actions pré-lever optionnelles
   - choose: []
     default: !input pre_sunrise_actions
 
-  # Allumer la lumière au niveau de départ
+  # 3. Allumer à la valeur de départ
   - action: light.turn_on
     target:
       entity_id: !input light_entity
@@ -302,13 +325,11 @@ action:
   - delay:
       seconds: 2
 
-  # Boucle de montée progressive
+  # 4. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
   - repeat:
       while:
-        # Continuer tant qu'on n'a pas atteint le nombre de pas
         - condition: template
           value_template: "{{ repeat.index <= total_steps }}"
-        # Abort si la lumière est éteinte manuellement
         - condition: state
           entity_id: !input light_entity
           state: "on"
@@ -317,19 +338,16 @@ action:
           target:
             entity_id: !input light_entity
           data:
-            # Courbe non-linéaire puissance 1.3 : lente au début, accélère vers la fin
             brightness_pct: >
               {{ (start_brightness + (end_brightness - start_brightness) * ((repeat.index / total_steps) ** 1.3)) | int }}
-            # Température de couleur : courbe inverse (puissance 1.5 → monte vite vers la fin)
             color_temp_kelvin: >
               {{ (start_kelvin + (end_kelvin - start_kelvin) * (1 - ((1 - repeat.index / total_steps) ** 1.5))) | int }}
             transition: "{{ step_interval }}"
           continue_on_error: true
-
         - delay:
             seconds: "{{ step_interval }}"
 
-  # Finaliser à la luminosité et couleur cible exactes
+  # 5. Finaliser exactement à la cible
   - condition: state
     entity_id: !input light_entity
     state: "on"
@@ -342,6 +360,25 @@ action:
       color_temp_kelvin: "{{ end_kelvin }}"
     continue_on_error: true
 
-  # Actions post-lever (optionnelles)
+  # 6. Reprendre AL via apply (remet la lampe sous contrôle AL)
+  - if:
+      - condition: template
+        value_template: "{{ al_entity_name != 'none' }}"
+    then:
+      - action: adaptive_lighting.set_manual_control
+        data:
+          entity_id: !input al_switch
+          lights: !input light_entity
+          manual_control: false
+        alias: Relâcher contrôle manuel AL
+      - action: adaptive_lighting.apply
+        data:
+          entity_id: !input al_switch
+          lights: !input light_entity
+          transition: 5
+        alias: Réappliquer AL (reprise douce en 5s)
+        continue_on_error: true
+
+  # 7. Actions post-lever (script buongiornitoussi, radio, notif...)
   - choose: []
     default: !input post_sunrise_actions
