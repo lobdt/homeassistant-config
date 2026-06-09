@@ -361,7 +361,20 @@ action:
         - delay:
             seconds: "{{ step_interval }}"
 
-  # 5. Finaliser exactement à la cible
+  # 5. Relâcher AL dans tous les cas (même si abort via extinction manuelle)
+  - if:
+      - condition: template
+        value_template: "{{ al_entity_name != 'none' }}"
+    then:
+      - action: adaptive_lighting.set_manual_control
+        data:
+          entity_id: !input al_switch
+          lights: !input light_entity
+          manual_control: false
+        alias: Relâcher contrôle manuel AL (toujours exécuté)
+        continue_on_error: true
+
+  # 6. Finaliser exactement à la cible (uniquement si lumière encore allumée)
   - condition: state
     entity_id: !input light_entity
     state: "on"
@@ -374,17 +387,11 @@ action:
       color_temp_kelvin: "{{ end_kelvin }}"
     continue_on_error: true
 
-  # 6. Reprendre AL via apply (remet la lampe sous contrôle AL)
+  # 7. Reprendre AL via apply (uniquement si lumière allumée)
   - if:
       - condition: template
         value_template: "{{ al_entity_name != 'none' }}"
     then:
-      - action: adaptive_lighting.set_manual_control
-        data:
-          entity_id: !input al_switch
-          lights: !input light_entity
-          manual_control: false
-        alias: Relâcher contrôle manuel AL
       - action: adaptive_lighting.apply
         data:
           entity_id: !input al_switch
@@ -393,6 +400,6 @@ action:
         alias: Réappliquer AL (reprise douce en 5s)
         continue_on_error: true
 
-  # 7. Actions post-lever (script buongiornitoussi, radio, notif...)
+  # 8. Actions post-lever (script buongiornitoussi, radio, notif...)
   - choose: []
     default: !input post_sunrise_actions
