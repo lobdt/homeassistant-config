@@ -59,14 +59,38 @@ blueprint:
         alarm_time:
           name: Heure de réveil (input_datetime)
           description: >
-            Helper `input_datetime` réglé sur "heure seule" = heure à laquelle la
-            lumière atteint sa luminosité maximale. L'automation calcule
-            automatiquement le démarrage = heure réveil - durée. Modifiable
-            chaque soir depuis ton dashboard ou widget iOS.
+            Helper `input_datetime` (heure seule) = **l'heure à laquelle tu veux
+            être réveillé**. La lumière atteindra 100% exactement à cette heure.
+
+            ⚠️ Ce helper seul ne suffit pas — il faut aussi créer le sensor
+            de démarrage ci-dessous.
           selector:
             entity:
               filter:
                 - domain: input_datetime
+
+        start_sensor:
+          name: Sensor heure de démarrage (template sensor)
+          description: >
+            Sensor template avec `device_class: timestamp` qui calcule
+            automatiquement `heure_réveil - durée`.
+
+            **Comment le créer :** Paramètres → Helpers → Créer un helper →
+            Template → Sensor → colle ce template (adapte l'entity_id et la
+            durée) :
+
+            `{{ (today_at(states('input_datetime.heure_reveil_chambre')) - timedelta(minutes=25)).isoformat() }}`
+
+            Puis sélectionne `device_class: timestamp`.
+
+            Ce sensor se met à jour automatiquement quand tu changes l'heure
+            de réveil. Le trigger `time` le surveille et démarre exactement
+            au bon moment — zéro polling, zéro ressource gaspillée.
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  device_class: timestamp
 
         enabled_boolean:
           name: Interrupteur on/off (input_boolean)
@@ -83,19 +107,20 @@ blueprint:
       name: 2️⃣ Courbe de lever de soleil
       icon: mdi:brightness-6
       input:
-        duration_min:
-          name: Durée du lever (minutes)
+        duration_number:
+          name: Durée du lever (input_number)
           description: >
-            Durée totale de la montée. Recommandation scientifique : 25 min.
-            L'automation démarre "durée" minutes AVANT l'heure de réveil.
-          default: 25
+            Helper `input_number` qui stocke la durée en minutes. Créer via
+            Paramètres → Helpers → `input_number` (min 5, max 60, step 5, unité min).
+
+            Le sensor de démarrage lit ce helper automatiquement — si tu changes
+            la durée ici, l'heure de démarrage se recalcule toute seule.
+
+            Valeur recommandée : **25 min** (consensus scientifique).
           selector:
-            number:
-              min: 5
-              max: 60
-              step: 5
-              unit_of_measurement: min
-              mode: slider
+            entity:
+              filter:
+                - domain: input_number
 
         start_brightness:
           name: Luminosité de départ (%)
@@ -248,7 +273,8 @@ blueprint:
 mode: single
 
 variables:
-  duration_min: !input duration_min
+  duration_number: !input duration_number
+  duration_min: "{{ states(duration_number) | int(25) }}"
   start_brightness: !input start_brightness
   end_brightness: !input end_brightness
   start_kelvin: !input start_kelvin
@@ -256,10 +282,8 @@ variables:
   step_interval: !input step_interval
   days_of_week: !input days_of_week
   light_entity: !input light_entity
-  alarm_time: !input alarm_time
   al_switch: !input al_switch
   total_steps: "{{ ((duration_min * 60) / step_interval) | int(1) }}"
-  # Nom de la config entry AL déduit du switch (ex: switch.adaptive_lighting_chambre_armoire → chambre_armoire)
   al_entity_name: >
     {% if al_switch | default([]) | length > 0 %}
       {{ al_switch | replace('switch.adaptive_lighting_', '') }}
@@ -268,25 +292,15 @@ variables:
     {% endif %}
 
 trigger:
-  - platform: template
-    value_template: >
-      {% set alarm = states(alarm_time) %}
-      {% if alarm not in ['unknown', 'unavailable'] %}
-        {% set h = alarm[:2] | int %}
-        {% set m = alarm[3:5] | int %}
-        {% set offset = duration_min | int %}
-        {% set start_total = (h * 60 + m - offset) %}
-        {% set start_h = ((start_total % 1440 + 1440) % 1440 // 60) | int %}
-        {% set start_m = ((start_total % 1440 + 1440) % 1440 % 60) | int %}
-        {{ now().hour == start_h and now().minute == start_m and now().second < 30 }}
-      {% else %}
-        false
-      {% endif %}
+  - platform: time
+    at: !input start_sensor
 
 condition:
+  # Vérifier que le boolean est activé
   - condition: state
     entity_id: !input enabled_boolean
     state: "on"
+  # Vérifier le jour de la semaine
   - condition: template
     value_template: >
       {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
