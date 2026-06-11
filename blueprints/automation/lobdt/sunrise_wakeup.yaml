@@ -3,24 +3,30 @@ blueprint:
   description: >
     # 🌅 Simulateur d'Aube — Réveil Progressif
 
-
     Monte progressivement la luminosité et la température de couleur pour simuler
     un lever de soleil naturel. Scientifiquement calibré : rouge-orangé chaud →
     blanc lumière du jour, courbe non-linéaire qui accélère vers la fin.
 
-
     ## ✨ Fonctionnalités
 
     - **Heure modifiable** au quotidien depuis un `input_datetime`
+
     - **Interrupteur on/off** via `input_boolean` (exposable dans HomeKit)
+
     - **Courbe non-linéaire** : lente au début, s'accélère (comme un vrai soleil)
+
     - **Adaptive Lighting** : suspend AL proprement avant le lever via
       `set_manual_control`, le reprend via `apply` à la fin — un seul champ à
       renseigner, aucun toggle de switch
-    - **Abort intelligent** : si la lumière est éteinte manuellement, s'arrête
-    - **Actions pré et post** lever optionnelles
-    - **Sélection de jours** de la semaine
 
+    - **Abort intelligent** : si la lumière est éteinte manuellement, s'arrête
+
+    - **Bypass mouvement** : active un `input_boolean` pendant toute la durée
+      du lever pour bloquer les automations de mouvement (optionnel)
+
+    - **Actions pré et post** lever optionnelles
+
+    - **Sélection de jours** de la semaine
 
     ## 🔬 Paramètres scientifiques par défaut
 
@@ -28,11 +34,12 @@ blueprint:
     (études circadiennes : montée douce chaud→froid favorise l'éveil naturel
     et supprime la mélatonine résiduelle sans choc lumineux)
 
-
     ## 📋 Prérequis
 
     - `input_datetime` (heure seule) pour l'heure de réveil
+
     - `input_boolean` pour activer/désactiver
+
     - Lumière avec support luminosité + température de couleur
 
   domain: automation
@@ -41,11 +48,13 @@ blueprint:
   source_url: https://github.com/lobdt/homeassistant-config
 
   input:
+
     # ─────────────────────────────────────────────────────
     section_core:
       name: 1️⃣ Essentiel
       icon: mdi:alarm
       input:
+
         light_entity:
           name: Lumière cible
           description: >
@@ -61,7 +70,6 @@ blueprint:
           description: >
             Helper `input_datetime` (heure seule) = **l'heure à laquelle tu veux
             être réveillé**. La lumière atteindra 100% exactement à cette heure.
-
             ⚠️ Ce helper seul ne suffit pas — il faut aussi créer le sensor
             de démarrage ci-dessous.
           selector:
@@ -107,15 +115,14 @@ blueprint:
       name: 2️⃣ Courbe de lever de soleil
       icon: mdi:brightness-6
       input:
+
         duration_number:
           name: Durée du lever (input_number)
           description: >
             Helper `input_number` qui stocke la durée en minutes. Créer via
             Paramètres → Helpers → `input_number` (min 5, max 60, step 5, unité min).
-
             Le sensor de démarrage lit ce helper automatiquement — si tu changes
             la durée ici, l'heure de démarrage se recalcule toute seule.
-
             Valeur recommandée : **25 min** (consensus scientifique).
           selector:
             entity:
@@ -196,6 +203,7 @@ blueprint:
       name: 3️⃣ Jours actifs
       icon: mdi:calendar-week
       input:
+
         days_of_week:
           name: Jours de la semaine
           description: Laisser vide = tous les jours.
@@ -225,6 +233,7 @@ blueprint:
       icon: mdi:theme-light-dark
       collapsed: true
       input:
+
         al_switch:
           name: Switch Adaptive Lighting de la lampe
           description: >
@@ -248,11 +257,38 @@ blueprint:
                   integration: adaptive_lighting
 
     # ─────────────────────────────────────────────────────
+    section_bypass:
+      name: 5️⃣ Bypass mouvement (optionnel)
+      icon: mdi:motion-sensor-off
+      collapsed: true
+      input:
+
+        bypass_boolean:
+          name: Input boolean de bypass mouvement
+          description: >
+            Helper `input_boolean` à activer pendant toute la durée du lever
+            pour bloquer les automations de mouvement (ex : empêcher un capteur
+            de mouvement d'éteindre la lumière pendant le lever).
+
+            L'automation active ce boolean juste avant l'allumage initial et
+            le désactive à la fin — même en cas d'abort par extinction manuelle.
+
+            Exemple : `input_boolean.chambre_bypass_manuel`
+
+            Laisser vide si non utilisé.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+    # ─────────────────────────────────────────────────────
     section_actions:
-      name: 5️⃣ Actions pré et post lever
+      name: 6️⃣ Actions pré et post lever
       icon: mdi:play-circle-outline
       collapsed: true
       input:
+
         pre_sunrise_actions:
           name: Actions avant le lever (optionnel)
           description: Exécutées juste avant que la lumière commence à monter.
@@ -283,6 +319,7 @@ variables:
   days_of_week: !input days_of_week
   light_entity: !input light_entity
   al_switch: !input al_switch
+  bypass_boolean: !input bypass_boolean
   total_steps: "{{ ((duration_min * 60) / step_interval) | int(1) }}"
   al_entity_name: >
     {% if al_switch | default([]) | length > 0 %}
@@ -290,6 +327,7 @@ variables:
     {% else %}
       none
     {% endif %}
+  bypass_enabled: "{{ bypass_boolean | default([]) | length > 0 }}"
 
 trigger:
   - platform: time
@@ -306,6 +344,7 @@ condition:
       {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
 
 action:
+
   # 1. Suspendre AL (set_manual_control) + désactiver sleep mode
   - if:
       - condition: template
@@ -323,23 +362,37 @@ action:
         alias: Désactiver AL sleep mode
         continue_on_error: true
 
-  # 2. Actions pré-lever optionnelles
+  # 2. Activer le bypass mouvement si configuré
+  - if:
+      - condition: template
+        value_template: "{{ bypass_enabled }}"
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: !input bypass_boolean
+        alias: Activer bypass mouvement
+        continue_on_error: true
+
+  # 3. Actions pré-lever optionnelles
   - choose: []
     default: !input pre_sunrise_actions
 
-  # 3. Allumer à la valeur de départ
+  # 4. Allumer à la valeur de départ — transition: 0 pour bypasser le
+  #    recall mémoire des ampoules Hue/Zigbee (évite le flash lumineux
+  #    au démarrage quand la lampe a une brightness élevée en mémoire)
   - action: light.turn_on
     target:
       entity_id: !input light_entity
     data:
       brightness_pct: "{{ start_brightness }}"
       color_temp_kelvin: "{{ start_kelvin }}"
+      transition: 0
     continue_on_error: true
 
   - delay:
       seconds: 2
 
-  # 4. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
+  # 5. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
   - repeat:
       while:
         - condition: template
@@ -361,7 +414,8 @@ action:
         - delay:
             seconds: "{{ step_interval }}"
 
-  # 5. Relâcher AL dans tous les cas (même si abort via extinction manuelle)
+  # 6. Relâcher AL + désactiver bypass dans tous les cas
+  #    (même si abort via extinction manuelle — continue_on_error sur tout)
   - if:
       - condition: template
         value_template: "{{ al_entity_name != 'none' }}"
@@ -374,7 +428,17 @@ action:
         alias: Relâcher contrôle manuel AL (toujours exécuté)
         continue_on_error: true
 
-  # 6. Finaliser exactement à la cible (uniquement si lumière encore allumée)
+  - if:
+      - condition: template
+        value_template: "{{ bypass_enabled }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: !input bypass_boolean
+        alias: Désactiver bypass mouvement (toujours exécuté)
+        continue_on_error: true
+
+  # 7. Finaliser exactement à la cible (uniquement si lumière encore allumée)
   - condition: state
     entity_id: !input light_entity
     state: "on"
@@ -387,7 +451,7 @@ action:
       color_temp_kelvin: "{{ end_kelvin }}"
     continue_on_error: true
 
-  # 7. Reprendre AL via apply (uniquement si lumière allumée)
+  # 8. Reprendre AL via apply (uniquement si lumière allumée)
   - if:
       - condition: template
         value_template: "{{ al_entity_name != 'none' }}"
@@ -400,6 +464,6 @@ action:
         alias: Réappliquer AL (reprise douce en 5s)
         continue_on_error: true
 
-  # 8. Actions post-lever (script buongiornitoussi, radio, notif...)
+  # 9. Actions post-lever (script buongiornitoussi, radio, notif...)
   - choose: []
     default: !input post_sunrise_actions
