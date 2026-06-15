@@ -1,430 +1,354 @@
 blueprint:
-  name: Simulateur d'Aube — Réveil Progressif
+  name: Hue Tap Dial - Dimming Dynamique (Z2M / MQTT)
   description: >
-    # 🌅 Simulateur d'Aube — Réveil Progressif
+    # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
 
-    Monte progressivement la luminosité et la température de couleur pour simuler
-    un lever de soleil naturel. Scientifiquement calibré : rouge-orangé chaud →
-    blanc lumière du jour, courbe non-linéaire qui accélère vers la fin.
+    Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via Zigbee2MQTT,
+    avec un **dimming dynamique à courbe cubique** : tourner doucement la molette
+    ajuste finement la luminosité (≈6 %), un gros coup rapide l'envoie quasiment
+    à fond (≈90-100 %).
 
 
-    ## ✨ Fonctionnalités
+    ## ✨ Pourquoi ce blueprint
 
-    - **Heure modifiable** au quotidien depuis un `input_datetime`
-    - **Interrupteur on/off** via `input_boolean` (exposable dans HomeKit)
-    - **Courbe non-linéaire** : lente au début, s'accélère (comme un vrai soleil)
-    - **Adaptive Lighting** : coupe le switch AL principal avant le lever,
-      le réactive à la fin + apply immédiat — un seul champ à renseigner
-    - **Abort intelligent** : si la lumière est éteinte manuellement, s'arrête
-    - **Actions pré et post** lever optionnelles
-    - **Sélection de jours** de la semaine
+    Les approches classiques (blueprints génériques, step fixe) saturent le réseau
+    Zigbee quand on tourne vite : la lampe reçoit une rafale de commandes et laggue.
+    Ici on lit directement `action_step_size` du message MQTT (la vitesse de rotation
+    rapportée par la molette), on applique une **courbe cubique** et on envoie un
+    seul `brightness_step_pct` avec `transition: 0`. Résultat : fluide, granulaire,
+    sans lag.
 
 
-    ## 🔬 Paramètres scientifiques par défaut
+    ## 🔧 Fonctions
 
-    Durée 25 min · 2200 K → 5500 K · Luminosité 1% → 100%
-    (études circadiennes : montée douce chaud→froid favorise l'éveil naturel
-    et supprime la mélatonine résiduelle sans choc lumineux)
+    - **Molette** : dim dynamique de la lampe sélectionnée (courbe cubique réglable)
+
+    - **Sélection de lampe** : un bouton bascule entre 2 lampes (via un `input_select`)
+
+    - **Boutons** : 4 boutons configurables (court + long) avec actions personnalisées
+
+    - **Retour auto** : un `input_text` ramène le contexte molette par défaut
 
 
     ## 📋 Prérequis
 
-    - `input_datetime` (heure seule) pour l'heure de réveil
-    - `input_boolean` pour activer/désactiver
-    - Lumière avec support luminosité + température de couleur
+    - Philips Hue Tap Dial Switch (RDM002) appairé dans **Zigbee2MQTT**
+
+    - Un helper `input_select` listant les 2 lampes (ex. options "Plafond", "Armoire")
+
+    - Un helper `input_text` pour le suivi du dernier bouton pressé
+
+    - Home Assistant 2024.10.0 ou plus récent
 
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
-  source_url: https://github.com/lobdt/homeassistant-config
+  source_url: https://github.com/local/tap-dial-dynamic-dimming
 
   input:
-    # ─────────────────────────────────────────────────────
-    section_core:
-      name: 1️⃣ Essentiel
-      icon: mdi:alarm
+    # ──────────────────────────────────────────────────────────────
+    section_mqtt:
+      name: 1️⃣ Connexion Zigbee2MQTT
+      icon: mdi:zigbee
       input:
-        light_entity:
-          name: Lumière cible
+        z2m_topic:
+          name: Topic MQTT de la télécommande
           description: >
-            La lumière à faire monter. Doit supporter luminosité ET température
-            de couleur. Pour plusieurs lampes, crée un groupe de lumières.
+            Topic Z2M complet de la télécommande, généralement
+            `zigbee2mqtt/<Nom de la télécommande>`.
+            Exemple : `zigbee2mqtt/Chambre-Telecommande-Porte`
+          selector:
+            text:
+
+    # ──────────────────────────────────────────────────────────────
+    section_dimming:
+      name: 2️⃣ Molette — Dimming dynamique
+      icon: mdi:knob
+      input:
+        light_selector:
+          name: Sélecteur de lampe (input_select)
+          description: >
+            Helper `input_select` à 2 options qui détermine quelle lampe la molette
+            contrôle. Les noms des 2 options doivent correspondre exactement aux
+            valeurs saisies plus bas (Option A / Option B).
+          selector:
+            entity:
+              filter:
+                - domain: input_select
+
+        light_option_a_name:
+          name: Option A — Nom dans l'input_select
+          description: Le nom EXACT de la 1ʳᵉ option (sensible à la casse).
+          default: "Chambre-Plafond"
+          selector:
+            text:
+
+        light_option_a_entity:
+          name: Option A — Lampe contrôlée
+          description: La lampe à piloter quand l'option A est sélectionnée.
           selector:
             entity:
               filter:
                 - domain: light
 
-        alarm_time:
-          name: Heure de réveil (input_datetime)
+        light_option_a_max:
+          name: Option A — Puissance max de la courbe
           description: >
-            Helper `input_datetime` (heure seule) = **l'heure à laquelle tu veux
-            être réveillé**. La lumière atteindra 100% exactement à cette heure.
-
-            ⚠️ Ce helper seul ne suffit pas — il faut aussi créer le sensor
-            de démarrage ci-dessous.
+            Amplitude maximale du dimming pour cette lampe (plus haut = plus sensible
+            sur les gros coups). 110 = un gros coup atteint ~100 %. Baisser pour
+            une lampe qu'on veut garder plus douce.
+          default: 110
           selector:
-            entity:
-              filter:
-                - domain: input_datetime
+            number:
+              min: 50
+              max: 200
+              step: 5
+              mode: slider
 
-        start_sensor:
-          name: Sensor heure de démarrage (template sensor)
-          description: >
-            Sensor template avec `device_class: timestamp` qui calcule
-            automatiquement `heure_réveil - durée`.
-
-            **Comment le créer :** Paramètres → Helpers → Créer un helper →
-            Template → Sensor → colle ce template (adapte l'entity_id et la
-            durée) :
-
-            `{{ (today_at(states('input_datetime.heure_reveil_chambre')) - timedelta(minutes=25)).isoformat() }}`
-
-            Puis sélectionne `device_class: timestamp`.
-
-            Ce sensor se met à jour automatiquement quand tu changes l'heure
-            de réveil. Le trigger `time` le surveille et démarre exactement
-            au bon moment — zéro polling, zéro ressource gaspillée.
-          selector:
-            entity:
-              filter:
-                - domain: sensor
-                  device_class: timestamp
-
-        enabled_boolean:
-          name: Interrupteur on/off (input_boolean)
-          description: >
-            Active ou désactive le réveil. Expose-le dans HomeKit pour un contrôle
-            rapide depuis Siri ("Dis Siri, active le réveil") ou l'app Maison.
-          selector:
-            entity:
-              filter:
-                - domain: input_boolean
-
-    # ─────────────────────────────────────────────────────
-    section_curve:
-      name: 2️⃣ Courbe de lever de soleil
-      icon: mdi:brightness-6
-      input:
-        duration_number:
-          name: Durée du lever (input_number)
-          description: >
-            Helper `input_number` qui stocke la durée en minutes. Créer via
-            Paramètres → Helpers → `input_number` (min 5, max 60, step 5, unité min).
-
-            Le sensor de démarrage lit ce helper automatiquement — si tu changes
-            la durée ici, l'heure de démarrage se recalcule toute seule.
-
-            Valeur recommandée : **25 min** (consensus scientifique).
-          selector:
-            entity:
-              filter:
-                - domain: input_number
-
-        start_brightness:
-          name: Luminosité de départ (%)
-          description: >
-            Luminosité initiale. Garder à 1-3% pour un début imperceptible.
-            Monter à 5% si l'ampoule ne répond pas aux valeurs très basses.
-          default: 1
+        light_option_a_min:
+          name: Option A — Pas minimum
+          description: Pas minimum garanti sur un tout petit cran lent (en %).
+          default: 3
           selector:
             number:
               min: 1
-              max: 20
+              max: 10
               step: 1
               mode: slider
 
-        end_brightness:
-          name: Luminosité finale (%)
+        light_option_b_name:
+          name: Option B — Nom dans l'input_select
+          description: Le nom EXACT de la 2ᵉ option (sensible à la casse).
+          default: "Chambre-Armoire"
+          selector:
+            text:
+
+        light_option_b_entity:
+          name: Option B — Lampe contrôlée
+          description: La lampe à piloter quand l'option B est sélectionnée.
+          selector:
+            entity:
+              filter:
+                - domain: light
+
+        light_option_b_max:
+          name: Option B — Puissance max de la courbe
           description: >
-            Luminosité atteinte à la fin. 100% recommandé pour un réveil énergisant.
+            Amplitude maximale du dimming pour la lampe B. Mettre plus haut qu'A si
+            cette lampe doit être plus réactive (utile pour un ruban LED plus lent).
+          default: 130
+          selector:
+            number:
+              min: 50
+              max: 200
+              step: 5
+              mode: slider
+
+        light_option_b_min:
+          name: Option B — Pas minimum
+          description: Pas minimum garanti sur un tout petit cran lent (en %).
+          default: 2
+          selector:
+            number:
+              min: 1
+              max: 10
+              step: 1
+              mode: slider
+
+        step_normalize:
+          name: Normalisation du step_size
+          description: >
+            Valeur de `action_step_size` considérée comme « gros coup » maximal.
+            La molette Hue rapporte généralement jusqu'à ~100-150 par message.
+            100 est un bon défaut. Baisser = plus sensible globalement.
           default: 100
           selector:
             number:
-              min: 20
-              max: 100
+              min: 50
+              max: 255
               step: 5
               mode: slider
 
-        start_kelvin:
-          name: Température de départ (Kelvin — chaud)
+        action_on_rotate:
+          name: Action supplémentaire à chaque rotation
           description: >
-            Couleur au début : 2200 K = rouge-orangé (lever de soleil naturel).
-            Science : partir chaud évite le choc lumineux et ne supprime pas
-            la mélatonine brutalement.
-          default: 2200
-          selector:
-            number:
-              min: 1800
-              max: 3000
-              step: 100
-              unit_of_measurement: K
-              mode: slider
-
-        end_kelvin:
-          name: Température finale (Kelvin — lumière du jour)
-          description: >
-            Couleur en fin de lever : 5500 K = blanc lumière du jour.
-            Science : 5000-5500 K stimule l'éveil et supprime la mélatonine
-            résiduelle. Baisser à 4000 K pour une fin plus douce.
-          default: 5500
-          selector:
-            number:
-              min: 3000
-              max: 6500
-              step: 100
-              unit_of_measurement: K
-              mode: slider
-
-        step_interval:
-          name: Intervalle entre chaque pas (secondes)
-          description: >
-            Temps entre deux ajustements. Philips Hue : 10-15s recommandé.
-            Plus court = plus fluide, mais plus d'appels Zigbee.
-          default: 15
-          selector:
-            number:
-              min: 5
-              max: 60
-              step: 5
-              unit_of_measurement: s
-              mode: slider
-
-    # ─────────────────────────────────────────────────────
-    section_schedule:
-      name: 3️⃣ Jours actifs
-      icon: mdi:calendar-week
-      input:
-        days_of_week:
-          name: Jours de la semaine
-          description: Laisser vide = tous les jours.
+            Action(s) optionnelle(s) exécutée(s) à CHAQUE cran de molette, en plus
+            du dimming. Typiquement : activer un `input_boolean` de bypass manuel
+            pour empêcher un capteur de mouvement de reprendre la main pendant
+            qu'on ajuste la lumière. Laisser vide pour ne rien faire de plus.
           default: []
           selector:
-            select:
-              multiple: true
-              options:
-                - label: Lundi
-                  value: mon
-                - label: Mardi
-                  value: tue
-                - label: Mercredi
-                  value: wed
-                - label: Jeudi
-                  value: thu
-                - label: Vendredi
-                  value: fri
-                - label: Samedi
-                  value: sat
-                - label: Dimanche
-                  value: sun
+            action:
 
-    # ─────────────────────────────────────────────────────
-    section_adaptive:
-      name: 4️⃣ Adaptive Lighting (optionnel)
-      icon: mdi:theme-light-dark
+    # ──────────────────────────────────────────────────────────────
+    section_button_1:
+      name: 3️⃣ Bouton 1
+      icon: mdi:numeric-1-circle-outline
+      input:
+        button_1_short:
+          name: Bouton 1 — Appui court
+          description: >
+            Action sur appui court. Par défaut on y met `input_select.select_next`
+            pour basculer la lampe contrôlée par la molette.
+          default: []
+          selector:
+            action:
+        button_1_long:
+          name: Bouton 1 — Appui long
+          description: Action sur appui long.
+          default: []
+          selector:
+            action:
+
+    section_button_2:
+      name: 4️⃣ Bouton 2
+      icon: mdi:numeric-2-circle-outline
+      input:
+        button_2_short:
+          name: Bouton 2 — Appui court
+          default: []
+          selector:
+            action:
+        button_2_long:
+          name: Bouton 2 — Appui long
+          default: []
+          selector:
+            action:
+
+    section_button_3:
+      name: 5️⃣ Bouton 3
+      icon: mdi:numeric-3-circle-outline
+      input:
+        button_3_short:
+          name: Bouton 3 — Appui court
+          default: []
+          selector:
+            action:
+        button_3_long:
+          name: Bouton 3 — Appui long
+          default: []
+          selector:
+            action:
+
+    section_button_4:
+      name: 6️⃣ Bouton 4
+      icon: mdi:numeric-4-circle-outline
+      input:
+        button_4_short:
+          name: Bouton 4 — Appui court
+          default: []
+          selector:
+            action:
+        button_4_long:
+          name: Bouton 4 — Appui long
+          default: []
+          selector:
+            action:
+
+    # ──────────────────────────────────────────────────────────────
+    section_context:
+      name: 7️⃣ Avancé — Suivi de contexte
+      icon: mdi:cog
       collapsed: true
       input:
-        al_switch:
-          name: Switch Adaptive Lighting de la lampe
+        last_pressed:
+          name: Helper de suivi (input_text)
           description: >
-            Le switch principal AL de ta lampe cible, ex :
-            `switch.adaptive_lighting_chambre_armoire`.
-
-            Couper ce switch désactive complètement AL pour cette lampe pendant
-            le lever. Il est réactivé automatiquement à la fin, suivi d'un
-            `adaptive_lighting.apply` pour une reprise immédiate.
-
-            Laisser vide si pas d'Adaptive Lighting sur cette lampe.
+            Helper `input_text` optionnel pour suivre le dernier bouton pressé.
+            Laissé tel quel par ce blueprint pour compatibilité ; les boutons
+            peuvent le remettre à "1" via leurs propres actions si besoin.
           default: []
           selector:
             entity:
               filter:
-                - domain: switch
-                  integration: adaptive_lighting
+                - domain: input_text
 
-    # ─────────────────────────────────────────────────────
-    section_bypass:
-      name: 5️⃣ Bypass mouvement (optionnel)
-      icon: mdi:motion-sensor-off
-      collapsed: true
-      input:
-        bypass_boolean:
-          name: Input boolean de bypass mouvement
-          description: >
-            Helper `input_boolean` activé pendant toute la durée du lever pour
-            bloquer les automations de mouvement (ex : empêcher un capteur de
-            mouvement d'éteindre la lumière pendant le lever).
-
-            Activé juste avant l'allumage initial, désactivé à la fin — même en
-            cas d'abort par extinction manuelle.
-
-            Exemple : `input_boolean.chambre_bypass_manuel`.
-            Laisser vide si non utilisé.
-          default: []
-          selector:
-            entity:
-              filter:
-                - domain: input_boolean
-
-    # ─────────────────────────────────────────────────────
-    section_actions:
-      name: 6️⃣ Actions pré et post lever
-      icon: mdi:play-circle-outline
-      collapsed: true
-      input:
-        pre_sunrise_actions:
-          name: Actions avant le lever (optionnel)
-          description: Exécutées juste avant que la lumière commence à monter.
-          default: []
-          selector:
-            action: {}
-
-        post_sunrise_actions:
-          name: Actions après le lever (optionnel)
-          description: >
-            Exécutées une fois la luminosité maximale atteinte, après que AL a
-            repris le contrôle. Ex : lancer un script de scène matinale, une
-            radio, une notification...
-          default: []
-          selector:
-            action: {}
-
-mode: single
-
-variables:
-  duration_number: !input duration_number
-  duration_min: "{{ states(duration_number) | int(25) }}"
-  start_brightness: !input start_brightness
-  end_brightness: !input end_brightness
-  start_kelvin: !input start_kelvin
-  end_kelvin: !input end_kelvin
-  step_interval: !input step_interval
-  days_of_week: !input days_of_week
-  light_entity: !input light_entity
-  al_switch: !input al_switch
-  bypass_boolean: !input bypass_boolean
-  total_steps: "{{ ((duration_min * 60) / step_interval) | int(1) }}"
+mode: parallel
+max: 10
 
 trigger:
-  - platform: time
-    at: !input start_sensor
+  - platform: mqtt
+    topic: !input z2m_topic
 
-condition:
-  # Vérifier que le boolean est activé
-  - condition: state
-    entity_id: !input enabled_boolean
-    state: "on"
-  # Vérifier le jour de la semaine
-  - condition: template
-    value_template: >
-      {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
+variables:
+  # Inputs accessibles dans les templates
+  opt_a_name: !input light_option_a_name
+  opt_a_entity: !input light_option_a_entity
+  opt_a_max: !input light_option_a_max
+  opt_a_min: !input light_option_a_min
+  opt_b_name: !input light_option_b_name
+  opt_b_entity: !input light_option_b_entity
+  opt_b_max: !input light_option_b_max
+  opt_b_min: !input light_option_b_min
+  selector_entity: !input light_selector
+  normalize: !input step_normalize
+  # Calculs molette
+  act: "{{ trigger.payload_json.action | default('') }}"
+  raw_step: "{{ trigger.payload_json.action_step_size | int(0) }}"
+  direction: "{{ 'up' if act == 'brightness_step_up' else 'down' }}"
+  selected: "{{ states(selector_entity) }}"
+  light_entity: "{{ opt_a_entity if selected == opt_a_name else opt_b_entity }}"
+  max_pct: "{{ opt_a_max if selected == opt_a_name else opt_b_max }}"
+  min_step: "{{ opt_a_min if selected == opt_a_name else opt_b_min }}"
+  norm: "{{ ([raw_step, normalize | int] | min) / (normalize | int) }}"
+  # Courbe CUBIQUE : douce en bas, forte en haut, capée à 100
+  computed_step: >
+    {{ [ [ (norm | float * norm | float * norm | float * max_pct | float) | round(0) | int, 100 ] | min, min_step | int ] | max }}
+  signed_step: "{{ computed_step if direction == 'up' else (computed_step * -1) }}"
 
 action:
-  # 1. Couper le switch AL principal — AL ne touche plus la lampe pendant le lever
-  - if:
-      - condition: template
-        value_template: "{{ al_switch | default([]) | length > 0 }}"
-    then:
-      - action: switch.turn_off
-        target:
-          entity_id: !input al_switch
-        alias: Couper AL
-        continue_on_error: true
+  - choose:
+      # ── MOLETTE : dimming dynamique ───────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ act in ['brightness_step_up', 'brightness_step_down'] }}"
+        sequence:
+          - action: light.turn_on
+            target:
+              entity_id: "{{ light_entity }}"
+            data:
+              brightness_step_pct: "{{ signed_step }}"
+              transition: 0
+          - alias: Action supplémentaire optionnelle sur rotation
+            sequence: !input action_on_rotate
 
-  # 2. Activer le bypass mouvement — bloque les capteurs pendant le lever
-  - if:
-      - condition: template
-        value_template: "{{ bypass_boolean | default([]) | length > 0 }}"
-    then:
-      - action: input_boolean.turn_on
-        target:
-          entity_id: !input bypass_boolean
-        alias: Activer bypass mouvement
-        continue_on_error: true
+      # ── BOUTON 1 ──────────────────────────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_1_press_release' }}"
+        sequence: !input button_1_short
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_1_hold_release' }}"
+        sequence: !input button_1_long
 
-  # 3. Actions pré-lever optionnelles
-  - choose: []
-    default: !input pre_sunrise_actions
+      # ── BOUTON 2 ──────────────────────────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_2_press_release' }}"
+        sequence: !input button_2_short
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_2_hold_release' }}"
+        sequence: !input button_2_long
 
-  # 4. Allumer à la valeur de départ
-  - action: light.turn_on
-    target:
-      entity_id: !input light_entity
-    data:
-      brightness_pct: "{{ start_brightness }}"
-      color_temp_kelvin: "{{ start_kelvin }}"
-    continue_on_error: true
+      # ── BOUTON 3 ──────────────────────────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_3_press_release' }}"
+        sequence: !input button_3_short
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_3_hold_release' }}"
+        sequence: !input button_3_long
 
-  # 5. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
-  - repeat:
-      while:
-        - condition: template
-          value_template: "{{ repeat.index <= total_steps }}"
-        - condition: state
-          entity_id: !input light_entity
-          state: "on"
-      sequence:
-        - action: light.turn_on
-          target:
-            entity_id: !input light_entity
-          data:
-            brightness_pct: >
-              {{ (start_brightness + (end_brightness - start_brightness) * ((repeat.index / total_steps) ** 1.3)) | int }}
-            color_temp_kelvin: >
-              {{ (start_kelvin + (end_kelvin - start_kelvin) * (1 - ((1 - repeat.index / total_steps) ** 1.5))) | int }}
-            transition: "{{ step_interval }}"
-          continue_on_error: true
-        - delay:
-            seconds: "{{ step_interval }}"
-
-  # 6. Réactiver AL + désactiver bypass — TOUJOURS (même si abort par extinction manuelle)
-  #    Placé avant la condition bloquante ci-dessous pour garantir le nettoyage.
-  - if:
-      - condition: template
-        value_template: "{{ al_switch | default([]) | length > 0 }}"
-    then:
-      - action: switch.turn_on
-        target:
-          entity_id: !input al_switch
-        alias: Réactiver AL
-        continue_on_error: true
-
-  - if:
-      - condition: template
-        value_template: "{{ bypass_boolean | default([]) | length > 0 }}"
-    then:
-      - action: input_boolean.turn_off
-        target:
-          entity_id: !input bypass_boolean
-        alias: Désactiver bypass mouvement
-        continue_on_error: true
-
-  # 7. Finaliser à la cible exacte (uniquement si lampe encore allumée)
-  - condition: state
-    entity_id: !input light_entity
-    state: "on"
-
-  - action: light.turn_on
-    target:
-      entity_id: !input light_entity
-    data:
-      brightness_pct: "{{ end_brightness }}"
-      color_temp_kelvin: "{{ end_kelvin }}"
-    continue_on_error: true
-
-  # 8. AL reprend immédiatement (sans attendre son prochain cycle naturel)
-  - if:
-      - condition: template
-        value_template: "{{ al_switch | default([]) | length > 0 }}"
-    then:
-      - action: adaptive_lighting.apply
-        data:
-          entity_id: !input al_switch
-          lights: !input light_entity
-          transition: 5
-        alias: Réappliquer AL en douceur (5s)
-        continue_on_error: true
-
-  # 9. Actions post-lever
-  - choose: []
-    default: !input post_sunrise_actions
+      # ── BOUTON 4 ──────────────────────────────────────────────────
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_4_press_release' }}"
+        sequence: !input button_4_short
+      - conditions:
+          - condition: template
+            value_template: "{{ act == 'button_4_hold_release' }}"
+        sequence: !input button_4_long
