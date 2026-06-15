@@ -14,9 +14,8 @@ blueprint:
     - **Heure modifiable** au quotidien depuis un `input_datetime`
     - **Interrupteur on/off** via `input_boolean` (exposable dans HomeKit)
     - **Courbe non-linéaire** : lente au début, s'accélère (comme un vrai soleil)
-    - **Adaptive Lighting** : coupe physiquement adapt_brightness + adapt_color
-      avant le lever (imparable), les réactive et fait reprendre AL
-      immédiatement à la fin — un seul champ à renseigner
+    - **Adaptive Lighting** : coupe le switch AL principal avant le lever,
+      le réactive à la fin + apply immédiat — un seul champ à renseigner
     - **Abort intelligent** : si la lumière est éteinte manuellement, s'arrête
     - **Actions pré et post** lever optionnelles
     - **Sélection de jours** de la semaine
@@ -231,18 +230,11 @@ blueprint:
             Le switch principal AL de ta lampe cible, ex :
             `switch.adaptive_lighting_chambre_armoire`.
 
-            Comment ça fonctionne : avant le lever, l'automation COUPE
-            physiquement les switches `adapt_brightness` et `adapt_color` de
-            cette lampe (méthode imparable — `set_manual_control` seul est
-            contournable par AL via une race condition). Le lever pilote alors
-            la lampe sans interférence. À la fin, les switches sont réactivés
-            puis `adaptive_lighting.apply` fait reprendre AL immédiatement.
+            Couper ce switch désactive complètement AL pour cette lampe pendant
+            le lever. Il est réactivé automatiquement à la fin, suivi d'un
+            `adaptive_lighting.apply` pour une reprise immédiate.
 
-            Le sleep mode est aussi désactivé avant le lever et n'est PAS
-            réactivé après (c'est le matin).
-
-            Le nom des sous-switches est déduit automatiquement de ce switch
-            principal. Laisser vide si pas d'Adaptive Lighting sur cette lampe.
+            Laisser vide si pas d'Adaptive Lighting sur cette lampe.
           default: []
           selector:
             entity:
@@ -251,8 +243,32 @@ blueprint:
                   integration: adaptive_lighting
 
     # ─────────────────────────────────────────────────────
+    section_bypass:
+      name: 5️⃣ Bypass mouvement (optionnel)
+      icon: mdi:motion-sensor-off
+      collapsed: true
+      input:
+        bypass_boolean:
+          name: Input boolean de bypass mouvement
+          description: >
+            Helper `input_boolean` activé pendant toute la durée du lever pour
+            bloquer les automations de mouvement (ex : empêcher un capteur de
+            mouvement d'éteindre la lumière pendant le lever).
+
+            Activé juste avant l'allumage initial, désactivé à la fin — même en
+            cas d'abort par extinction manuelle.
+
+            Exemple : `input_boolean.chambre_bypass_manuel`.
+            Laisser vide si non utilisé.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_boolean
+
+    # ─────────────────────────────────────────────────────
     section_actions:
-      name: 5️⃣ Actions pré et post lever
+      name: 6️⃣ Actions pré et post lever
       icon: mdi:play-circle-outline
       collapsed: true
       input:
@@ -286,13 +302,8 @@ variables:
   days_of_week: !input days_of_week
   light_entity: !input light_entity
   al_switch: !input al_switch
+  bypass_boolean: !input bypass_boolean
   total_steps: "{{ ((duration_min * 60) / step_interval) | int(1) }}"
-  al_entity_name: >-
-    {% if al_switch | default([]) | length > 0 %}
-    {{- al_switch | replace('switch.adaptive_lighting_', '') | trim -}}
-    {% else %}
-    none
-    {%- endif %}
 
 trigger:
   - platform: time
@@ -309,34 +320,33 @@ condition:
       {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
 
 action:
-  # 1. Couper PHYSIQUEMENT adapt_brightness + adapt_color + sleep mode
-  #    (set_manual_control ne suffit pas : AL peut repasser par-dessus à cause
-  #     d'une race condition. Couper les switches est imparable.)
+  # 1. Couper le switch AL principal — AL ne touche plus la lampe pendant le lever
   - if:
       - condition: template
-        value_template: "{{ al_entity_name != 'none' }}"
+        value_template: "{{ al_switch | default([]) | length > 0 }}"
     then:
       - action: switch.turn_off
         target:
-          entity_id: "switch.adaptive_lighting_adapt_brightness_{{ al_entity_name }}"
-        alias: Couper AL adapt_brightness
-        continue_on_error: true
-      - action: switch.turn_off
-        target:
-          entity_id: "switch.adaptive_lighting_adapt_color_{{ al_entity_name }}"
-        alias: Couper AL adapt_color
-        continue_on_error: true
-      - action: switch.turn_off
-        target:
-          entity_id: "switch.adaptive_lighting_sleep_mode_{{ al_entity_name }}"
-        alias: Désactiver AL sleep mode
+          entity_id: !input al_switch
+        alias: Couper AL
         continue_on_error: true
 
-  # 2. Actions pré-lever optionnelles
+  # 2. Activer le bypass mouvement — bloque les capteurs pendant le lever
+  - if:
+      - condition: template
+        value_template: "{{ bypass_boolean | default([]) | length > 0 }}"
+    then:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: !input bypass_boolean
+        alias: Activer bypass mouvement
+        continue_on_error: true
+
+  # 3. Actions pré-lever optionnelles
   - choose: []
     default: !input pre_sunrise_actions
 
-  # 3. Allumer à la valeur de départ
+  # 4. Allumer à la valeur de départ
   - action: light.turn_on
     target:
       entity_id: !input light_entity
@@ -345,10 +355,7 @@ action:
       color_temp_kelvin: "{{ start_kelvin }}"
     continue_on_error: true
 
-  - delay:
-      seconds: 2
-
-  # 4. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
+  # 5. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
   - repeat:
       while:
         - condition: template
@@ -370,24 +377,29 @@ action:
         - delay:
             seconds: "{{ step_interval }}"
 
-  # 5. Réactiver PHYSIQUEMENT les switches AL — TOUJOURS, même si la lampe a
-  #    été éteinte manuellement (placé avant la condition bloquante ci-dessous).
+  # 6. Réactiver AL + désactiver bypass — TOUJOURS (même si abort par extinction manuelle)
+  #    Placé avant la condition bloquante ci-dessous pour garantir le nettoyage.
   - if:
       - condition: template
-        value_template: "{{ al_entity_name != 'none' }}"
+        value_template: "{{ al_switch | default([]) | length > 0 }}"
     then:
       - action: switch.turn_on
         target:
-          entity_id: "switch.adaptive_lighting_adapt_brightness_{{ al_entity_name }}"
-        alias: Réactiver AL adapt_brightness
-        continue_on_error: true
-      - action: switch.turn_on
-        target:
-          entity_id: "switch.adaptive_lighting_adapt_color_{{ al_entity_name }}"
-        alias: Réactiver AL adapt_color
+          entity_id: !input al_switch
+        alias: Réactiver AL
         continue_on_error: true
 
-  # 6. Finaliser exactement à la cible (uniquement si lumière encore allumée)
+  - if:
+      - condition: template
+        value_template: "{{ bypass_boolean | default([]) | length > 0 }}"
+    then:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: !input bypass_boolean
+        alias: Désactiver bypass mouvement
+        continue_on_error: true
+
+  # 7. Finaliser à la cible exacte (uniquement si lampe encore allumée)
   - condition: state
     entity_id: !input light_entity
     state: "on"
@@ -400,19 +412,19 @@ action:
       color_temp_kelvin: "{{ end_kelvin }}"
     continue_on_error: true
 
-  # 7. Réappliquer AL en douceur (la lampe est à 100%, AL reprend depuis là)
+  # 8. AL reprend immédiatement (sans attendre son prochain cycle naturel)
   - if:
       - condition: template
-        value_template: "{{ al_entity_name != 'none' }}"
+        value_template: "{{ al_switch | default([]) | length > 0 }}"
     then:
       - action: adaptive_lighting.apply
         data:
           entity_id: !input al_switch
           lights: !input light_entity
           transition: 5
-        alias: Réappliquer AL (reprise douce en 5s)
+        alias: Réappliquer AL en douceur (5s)
         continue_on_error: true
 
-  # 8. Actions post-lever (script buongiornitoussi, radio, notif...)
+  # 9. Actions post-lever
   - choose: []
     default: !input post_sunrise_actions
