@@ -443,16 +443,3 @@ action:
   # 9. Actions post-lever
   - choose: []
     default: !input post_sunrise_actions
-
-  # 10. Désactiver le sleep mode AL si encore actif (peut rester ON si activé
-  #     manuellement avant le lever — le matin on ne veut plus de mode nuit)
-  - if:
-      - condition: template
-        value_template: "{{ al_switch | default([]) | length > 0 }}"
-    then:
-      - action: adaptive_lighting.change_switch_settings
-        data:
-          entity_id: !input al_switch
-          sleep_mode: false
-        alias: Désactiver sleep mode AL (change_switch_settings)
-        continue_on_error: true
