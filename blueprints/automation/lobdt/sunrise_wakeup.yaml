@@ -358,6 +358,12 @@ action:
       color_temp_kelvin: "{{ start_kelvin }}"
     continue_on_error: true
 
+  # 4bis. Attendre la confirmation Zigbee avant le premier check de la boucle
+  #       (la lampe met ~200-400ms à confirmer son état via Zigbee — sans ce délai
+  #       le while voit encore "off" et aborte immédiatement)
+  - delay:
+      seconds: 1
+
   # 5. Boucle de montée progressive (courbe non-linéaire puissance 1.3 / 1.5)
   - repeat:
       while:
