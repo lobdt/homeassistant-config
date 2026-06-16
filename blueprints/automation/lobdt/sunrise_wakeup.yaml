@@ -330,6 +330,9 @@ action:
           entity_id: !input al_switch
         alias: Couper AL
         continue_on_error: true
+      - delay:
+          seconds: 1
+        alias: Laisser AL terminer ses opérations en cours avant d'allumer
 
   # 2. Activer le bypass mouvement — bloque les capteurs pendant le lever
   - if:
