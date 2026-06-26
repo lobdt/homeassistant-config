@@ -219,11 +219,16 @@ action:
   - choose:
 
     # ── Alerte déclenchée ─────────────────────────────────────────────────
+    # Condition sur l'état réel du capteur (fonctionne aussi en test manuel)
     - conditions:
-        - condition: trigger
-          id:
-            - alert_numeric
-            - alert_state
+        - condition: template
+          value_template: >
+            {% if trigger_type == 'numeric' %}
+              {{ states(trigger_entity) | float(0) > numeric_above | float(0) }}
+            {% else %}
+              {{ states(trigger_entity) == trigger_state }}
+            {% endif %}
+          alias: Capteur en état d'alerte
       sequence:
         # Envoyer la notification d'alerte
         - action: "{{ notify_service }}"
@@ -261,11 +266,16 @@ action:
                   message: "{{ alert_message }}"
 
     # ── Retour à la normale ───────────────────────────────────────────────
+    # Condition : capteur revenu à la normale + message configuré
     - conditions:
-        - condition: trigger
-          id:
-            - resolved_numeric
-            - resolved_state
+        - condition: template
+          value_template: >
+            {% if trigger_type == 'numeric' %}
+              {{ states(trigger_entity) | float(0) <= numeric_above | float(0) }}
+            {% else %}
+              {{ states(trigger_entity) != trigger_state }}
+            {% endif %}
+          alias: Capteur revenu à la normale
         - condition: template
           value_template: "{{ resolved_title | length > 0 }}"
       sequence:
