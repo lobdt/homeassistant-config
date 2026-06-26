@@ -109,15 +109,16 @@ blueprint:
       input:
 
         notify_service:
-          name: Service de notification
+          name: Entité de notification
           description: >
-            Le service notify à utiliser. Exemples :
-            `notify.mobile_app_iphone_loic`,
+            L'entité notify à utiliser. Exemples :
             `notify.iphones_loic_alina` (groupe),
-            `notify.ntfy_cuisine`
+            `notify.mobile_app_iphone_loic`,
+            `notify.iphone_de_alina`
           default: notify.notify
           selector:
-            text: {}
+            entity:
+              domain: notify
 
         alert_title:
           name: Titre de l'alerte
@@ -231,7 +232,9 @@ action:
           alias: Capteur en état d'alerte
       sequence:
         # Envoyer la notification d'alerte
-        - action: "{{ notify_service }}"
+        - action: notify.send_message
+          target:
+            entity_id: "{{ notify_service }}"
           data:
             title: "{{ alert_title }}"
             message: "{{ alert_message }}"
@@ -260,7 +263,9 @@ action:
                   {% else %}
                     {{ states(trigger_entity) == trigger_state }}
                   {% endif %}
-              - action: "{{ notify_service }}"
+              - action: notify.send_message
+                target:
+                  entity_id: "{{ notify_service }}"
                 data:
                   title: "{{ alert_title }}"
                   message: "{{ alert_message }}"
@@ -279,7 +284,9 @@ action:
         - condition: template
           value_template: "{{ resolved_title | length > 0 }}"
       sequence:
-        - action: "{{ notify_service }}"
+        - action: notify.send_message
+          target:
+            entity_id: "{{ notify_service }}"
           data:
             title: "{{ resolved_title }}"
             message: "{{ resolved_message }}"
