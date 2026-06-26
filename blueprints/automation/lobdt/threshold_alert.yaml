@@ -1,0 +1,277 @@
+blueprint:
+  name: Threshold Alert & Repeat
+  description: >
+    # 🔔 Threshold Alert & Repeat
+
+    **Version: 1.0**
+
+
+    Envoie une notification répétée tant qu'un capteur dépasse un seuil ou
+    qu'un appareil est dans un état indésirable. Notifie aussi quand le
+    problème est résolu.
+
+
+    **Cas d'usage typiques :**
+    - Frigo / congélateur trop chaud
+    - Détecteur d'inondation
+    - Capteur CO₂ trop élevé
+    - Porte ouverte trop longtemps
+    - Tout capteur numérique ou binaire
+
+
+    **Fonctionnement :**
+
+    1. Le trigger se déclenche quand le seuil est dépassé (ou l'état atteint)
+    2. Attend le délai de confirmation avant d'alerter (évite les fausses alertes)
+    3. Envoie la notification d'alerte
+    4. Répète la notification à intervalle régulier tant que le problème persiste
+    5. Envoie une notification de retour à la normale quand le problème est résolu
+
+  domain: automation
+  author: lobdt
+  input:
+
+    # ─────────────────────────────────────────────────────
+    section_trigger:
+      name: 1️⃣ Déclencheur
+      icon: mdi:alert-circle-outline
+      collapsed: false
+      input:
+
+        trigger_type:
+          name: Type de déclencheur
+          description: >
+            **Numérique** : se déclenche quand le capteur dépasse un seuil
+            (ex: température > 8°C).
+
+            **État** : se déclenche quand l'entité passe à un état donné
+            (ex: détecteur d'inondation = detected).
+          default: numeric
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - label: Numérique (above/below)
+                  value: numeric
+                - label: État (on/off/detected/...)
+                  value: state
+
+        trigger_entity:
+          name: Entité à surveiller
+          description: >
+            Le capteur ou l'appareil à surveiller.
+            Ex: `sensor.cuisine_thermometre_frigo_temperature`,
+            `binary_sensor.cuisine_inondation`
+          selector:
+            entity: {}
+
+        numeric_above:
+          name: Seuil — Au-dessus de (numérique)
+          description: >
+            **Uniquement pour le type Numérique.**
+            L'alerte se déclenche si la valeur dépasse ce seuil.
+            Ex: `8` pour un frigo (°C), `-10` pour un congélateur.
+          default: 0
+          selector:
+            number:
+              min: -100
+              max: 1000
+              step: 0.5
+              unit_of_measurement: ""
+              mode: box
+
+        trigger_state:
+          name: État déclencheur (état)
+          description: >
+            **Uniquement pour le type État.**
+            L'alerte se déclenche quand l'entité passe à cet état.
+            Ex: `on`, `detected`, `wet`
+          default: "on"
+          selector:
+            text: {}
+
+        confirmation_delay:
+          name: Délai de confirmation avant alerte
+          description: >
+            Attendre ce délai avant d'envoyer la première notification.
+            Évite les fausses alertes (ex: ouverture de porte de frigo,
+            passage temporaire au-dessus du seuil).
+          default:
+            minutes: 10
+          selector:
+            duration: {}
+
+    # ─────────────────────────────────────────────────────
+    section_notification:
+      name: 2️⃣ Notifications
+      icon: mdi:bell-outline
+      collapsed: false
+      input:
+
+        notify_service:
+          name: Service de notification
+          description: >
+            Le service notify à utiliser. Exemples :
+            `notify.mobile_app_iphone_loic`,
+            `notify.iphones_loic_alina` (groupe),
+            `notify.ntfy_cuisine`
+          default: notify.notify
+          selector:
+            text: {}
+
+        alert_title:
+          name: Titre de l'alerte
+          description: Titre de la notification d'alerte.
+          default: "⚠️ Alerte capteur"
+          selector:
+            text: {}
+
+        alert_message:
+          name: Message d'alerte
+          description: >
+            Message envoyé lors de l'alerte. Tu peux utiliser des templates :
+            `{{ states('sensor.xxx') }}` pour la valeur actuelle,
+            `{{ state_attr('sensor.xxx', 'unit_of_measurement') }}` pour l'unité.
+          default: "Un capteur a dépassé son seuil !"
+          selector:
+            text:
+              multiline: true
+
+        resolved_title:
+          name: Titre — Retour à la normale (optionnel)
+          description: Titre de la notification quand le problème est résolu. Laisser vide pour ne pas notifier.
+          default: "✅ Retour à la normale"
+          selector:
+            text: {}
+
+        resolved_message:
+          name: Message — Retour à la normale (optionnel)
+          description: Message envoyé quand le capteur repasse sous le seuil / à l'état normal.
+          default: "Le capteur est revenu à la normale."
+          selector:
+            text:
+              multiline: true
+
+    # ─────────────────────────────────────────────────────
+    section_repeat:
+      name: 3️⃣ Répétition
+      icon: mdi:repeat
+      collapsed: false
+      input:
+
+        repeat_interval:
+          name: Intervalle de répétition
+          description: >
+            Tant que le problème persiste, une nouvelle notification est envoyée
+            à cet intervalle. Mettre à 0 pour désactiver la répétition.
+          default:
+            minutes: 30
+          selector:
+            duration: {}
+
+variables:
+  trigger_type: !input trigger_type
+  trigger_entity: !input trigger_entity
+  numeric_above: !input numeric_above
+  trigger_state: !input trigger_state
+  notify_service: !input notify_service
+  alert_title: !input alert_title
+  alert_message: !input alert_message
+  resolved_title: !input resolved_title
+  resolved_message: !input resolved_message
+  repeat_interval: !input repeat_interval
+  confirmation_delay: !input confirmation_delay
+
+trigger:
+  # Trigger numérique — valeur dépasse le seuil
+  - trigger: numeric_state
+    entity_id: !input trigger_entity
+    above: !input numeric_above
+    for: !input confirmation_delay
+    id: alert_numeric
+    enabled: "{{ trigger_type == 'numeric' }}"
+
+  # Trigger état — entité passe à l'état déclencheur
+  - trigger: state
+    entity_id: !input trigger_entity
+    to: !input trigger_state
+    for: !input confirmation_delay
+    id: alert_state
+    enabled: "{{ trigger_type == 'state' }}"
+
+  # Trigger retour à la normale — numérique repasse sous le seuil
+  - trigger: numeric_state
+    entity_id: !input trigger_entity
+    below: !input numeric_above
+    id: resolved_numeric
+    enabled: "{{ trigger_type == 'numeric' }}"
+
+  # Trigger retour à la normale — état quitte l'état déclencheur
+  - trigger: state
+    entity_id: !input trigger_entity
+    from: !input trigger_state
+    id: resolved_state
+    enabled: "{{ trigger_type == 'state' }}"
+
+condition: []
+
+action:
+  - choose:
+
+    # ── Alerte déclenchée ─────────────────────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id:
+            - alert_numeric
+            - alert_state
+      sequence:
+        # Envoyer la notification d'alerte
+        - action: "{{ notify_service }}"
+          data:
+            title: "{{ alert_title }}"
+            message: "{{ alert_message }}"
+
+        # Répéter tant que le problème persiste
+        - repeat:
+            while:
+              - condition: template
+                value_template: >
+                  {% if trigger_type == 'numeric' %}
+                    {{ states(trigger_entity) | float(0) > numeric_above | float(0) }}
+                  {% else %}
+                    {{ states(trigger_entity) == trigger_state }}
+                  {% endif %}
+              - condition: template
+                value_template: >
+                  {{ (repeat_interval.hours | default(0)) * 3600
+                     + (repeat_interval.minutes | default(0)) * 60
+                     + (repeat_interval.seconds | default(0)) > 0 }}
+            sequence:
+              - delay: !input repeat_interval
+              - condition: template
+                value_template: >
+                  {% if trigger_type == 'numeric' %}
+                    {{ states(trigger_entity) | float(0) > numeric_above | float(0) }}
+                  {% else %}
+                    {{ states(trigger_entity) == trigger_state }}
+                  {% endif %}
+              - action: "{{ notify_service }}"
+                data:
+                  title: "{{ alert_title }}"
+                  message: "{{ alert_message }}"
+
+    # ── Retour à la normale ───────────────────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id:
+            - resolved_numeric
+            - resolved_state
+        - condition: template
+          value_template: "{{ resolved_title | length > 0 }}"
+      sequence:
+        - action: "{{ notify_service }}"
+          data:
+            title: "{{ resolved_title }}"
+            message: "{{ resolved_message }}"
+
+mode: restart
