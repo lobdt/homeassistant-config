@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 1.0**
+    **Version: 3.0**
 
 
     Envoie une notification répétée tant qu'un capteur dépasse un seuil ou
@@ -16,16 +16,14 @@ blueprint:
     - Détecteur d'inondation
     - Capteur CO₂ trop élevé
     - Porte ouverte trop longtemps
-    - Tout capteur numérique ou binaire
 
 
     **Fonctionnement :**
 
-    1. Le trigger se déclenche quand le seuil est dépassé (ou l'état atteint)
-    2. Attend le délai de confirmation avant d'alerter (évite les fausses alertes)
-    3. Envoie la notification d'alerte
-    4. Répète la notification à intervalle régulier tant que le problème persiste
-    5. Envoie une notification de retour à la normale quand le problème est résolu
+    1. Remplis soit **Entité numérique** soit **Entité état** (pas les deux).
+    2. Le trigger se déclenche quand le seuil/état est atteint pendant le délai de confirmation.
+    3. La notification d'alerte est envoyée, puis répétée à intervalle régulier.
+    4. Quand le problème se résout, une notification de retour à la normale est envoyée.
 
   domain: automation
   author: lobdt
@@ -38,54 +36,52 @@ blueprint:
       collapsed: false
       input:
 
-        trigger_type:
-          name: Type de déclencheur
+        numeric_entity:
+          name: Entité numérique (optionnel)
           description: >
-            **Numérique** : se déclenche quand le capteur dépasse un seuil
-            (ex: température > 8°C).
+            Capteur numérique à surveiller. L'alerte se déclenche si la valeur
+            dépasse le **Seuil** ci-dessous.
 
-            **État** : se déclenche quand l'entité passe à un état donné
-            (ex: détecteur d'inondation = detected).
-          default: numeric
-          selector:
-            select:
-              mode: dropdown
-              options:
-                - label: Numérique (above/below)
-                  value: numeric
-                - label: État (on/off/detected/...)
-                  value: state
+            Ex: `sensor.cuisine_thermometre_frigo_temperature`
 
-        trigger_entity:
-          name: Entité à surveiller
-          description: >
-            Le capteur ou l'appareil à surveiller.
-            Ex: `sensor.cuisine_thermometre_frigo_temperature`,
-            `binary_sensor.cuisine_inondation`
+            Laisser vide si tu utilises une entité état.
+          default: []
           selector:
-            entity: {}
+            entity:
+              domain:
+                - sensor
+                - input_number
 
         numeric_above:
-          name: Seuil — Au-dessus de (numérique)
+          name: Seuil — Au-dessus de
           description: >
-            **Uniquement pour le type Numérique.**
             L'alerte se déclenche si la valeur dépasse ce seuil.
             Ex: `8` pour un frigo (°C), `-10` pour un congélateur.
           default: 0
           selector:
             number:
               min: -100
-              max: 1000
+              max: 10000
               step: 0.5
               unit_of_measurement: ""
               mode: box
 
-        trigger_state:
-          name: État déclencheur (état)
+        state_entity:
+          name: Entité état (optionnel)
           description: >
-            **Uniquement pour le type État.**
-            L'alerte se déclenche quand l'entité passe à cet état.
-            Ex: `on`, `detected`, `wet`
+            Entité dont l'état déclenche l'alerte.
+            Ex: `binary_sensor.cuisine_inondation`
+
+            Laisser vide si tu utilises une entité numérique.
+          default: []
+          selector:
+            entity: {}
+
+        alert_state:
+          name: État déclencheur
+          description: >
+            État qui déclenche l'alerte.
+            Ex: `on`, `detected`, `wet`, `open`
           default: "on"
           selector:
             text: {}
@@ -94,8 +90,7 @@ blueprint:
           name: Délai de confirmation avant alerte
           description: >
             Attendre ce délai avant d'envoyer la première notification.
-            Évite les fausses alertes (ex: ouverture de porte de frigo,
-            passage temporaire au-dessus du seuil).
+            Évite les fausses alertes (ex: ouverture de porte de frigo).
           default:
             minutes: 10
           selector:
@@ -108,13 +103,11 @@ blueprint:
       collapsed: false
       input:
 
-        notify_service:
+        notify_entity:
           name: Entité de notification
           description: >
-            L'entité notify à utiliser. Exemples :
-            `notify.iphones_loic_alina` (groupe),
-            `notify.mobile_app_iphone_loic`,
-            `notify.iphone_de_alina`
+            L'entité notify à utiliser.
+            Ex: `notify.iphones_loic_alina`, `notify.mobile_app_iphone_loic`
           default: notify.notify
           selector:
             entity:
@@ -122,7 +115,6 @@ blueprint:
 
         alert_title:
           name: Titre de l'alerte
-          description: Titre de la notification d'alerte.
           default: "⚠️ Alerte capteur"
           selector:
             text: {}
@@ -130,9 +122,8 @@ blueprint:
         alert_message:
           name: Message d'alerte
           description: >
-            Message envoyé lors de l'alerte. Tu peux utiliser des templates :
-            `{{ states('sensor.xxx') }}` pour la valeur actuelle,
-            `{{ state_attr('sensor.xxx', 'unit_of_measurement') }}` pour l'unité.
+            Tu peux utiliser des templates :
+            `{{ states('sensor.xxx') }}` pour la valeur actuelle.
           default: "Un capteur a dépassé son seuil !"
           selector:
             text:
@@ -140,14 +131,13 @@ blueprint:
 
         resolved_title:
           name: Titre — Retour à la normale (optionnel)
-          description: Titre de la notification quand le problème est résolu. Laisser vide pour ne pas notifier.
+          description: Laisser vide pour ne pas notifier au retour à la normale.
           default: "✅ Retour à la normale"
           selector:
             text: {}
 
         resolved_message:
           name: Message — Retour à la normale (optionnel)
-          description: Message envoyé quand le capteur repasse sous le seuil / à l'état normal.
           default: "Le capteur est revenu à la normale."
           selector:
             text:
@@ -163,56 +153,58 @@ blueprint:
         repeat_interval:
           name: Intervalle de répétition
           description: >
-            Tant que le problème persiste, une nouvelle notification est envoyée
-            à cet intervalle. Mettre à 0 pour désactiver la répétition.
+            Nouvelle notification envoyée à cet intervalle tant que le problème
+            persiste. Mettre à 0 pour désactiver la répétition.
           default:
             minutes: 30
           selector:
             duration: {}
 
 variables:
-  trigger_type: !input trigger_type
-  trigger_entity: !input trigger_entity
+  numeric_entity: !input numeric_entity
   numeric_above: !input numeric_above
-  trigger_state: !input trigger_state
-  notify_service: !input notify_service
+  state_entity: !input state_entity
+  alert_state: !input alert_state
+  notify_entity: !input notify_entity
   alert_title: !input alert_title
   alert_message: !input alert_message
   resolved_title: !input resolved_title
   resolved_message: !input resolved_message
   repeat_interval: !input repeat_interval
-  confirmation_delay: !input confirmation_delay
+  # Secondes totales de l'intervalle — calculé une fois, utilisé dans while
+  repeat_seconds: >
+    {{ (repeat_interval.hours | default(0)) * 3600
+       + (repeat_interval.minutes | default(0)) * 60
+       + (repeat_interval.seconds | default(0)) }}
 
 trigger:
   # Trigger numérique — valeur dépasse le seuil
+  # Si numeric_entity est vide ([]), ce trigger ne se déclenche jamais
   - trigger: numeric_state
-    entity_id: !input trigger_entity
+    entity_id: !input numeric_entity
     above: !input numeric_above
     for: !input confirmation_delay
     id: alert_numeric
-    enabled: "{{ trigger_type == 'numeric' }}"
 
   # Trigger état — entité passe à l'état déclencheur
+  # Si state_entity est vide ([]), ce trigger ne se déclenche jamais
   - trigger: state
-    entity_id: !input trigger_entity
-    to: !input trigger_state
+    entity_id: !input state_entity
+    to: !input alert_state
     for: !input confirmation_delay
     id: alert_state
-    enabled: "{{ trigger_type == 'state' }}"
 
   # Trigger retour à la normale — numérique repasse sous le seuil
   - trigger: numeric_state
-    entity_id: !input trigger_entity
+    entity_id: !input numeric_entity
     below: !input numeric_above
     id: resolved_numeric
-    enabled: "{{ trigger_type == 'numeric' }}"
 
   # Trigger retour à la normale — état quitte l'état déclencheur
   - trigger: state
-    entity_id: !input trigger_entity
-    from: !input trigger_state
+    entity_id: !input state_entity
+    from: !input alert_state
     id: resolved_state
-    enabled: "{{ trigger_type == 'state' }}"
 
 condition: []
 
@@ -220,73 +212,73 @@ action:
   - choose:
 
     # ── Alerte déclenchée ─────────────────────────────────────────────────
-    # Condition sur l'état réel du capteur (fonctionne aussi en test manuel)
     - conditions:
-        - condition: template
-          value_template: >
-            {% if trigger_type == 'numeric' %}
-              {{ states(trigger_entity) | float(0) > numeric_above | float(0) }}
-            {% else %}
-              {{ states(trigger_entity) == trigger_state }}
-            {% endif %}
-          alias: Capteur en état d'alerte
+        - condition: trigger
+          id:
+            - alert_numeric
+            - alert_state
       sequence:
-        # Envoyer la notification d'alerte
+        # Première notification
         - action: notify.send_message
           target:
-            entity_id: "{{ notify_service }}"
+            entity_id: !input notify_entity
           data:
             title: "{{ alert_title }}"
             message: "{{ alert_message }}"
 
-        # Répéter tant que le problème persiste
+        # Répétition : attendre l'intervalle OU la résolution du problème
         - repeat:
             while:
+              # Continuer seulement si répétition activée (intervalle > 0)
+              - condition: template
+                value_template: "{{ repeat_seconds > 0 }}"
+              # Continuer seulement si le problème persiste encore
               - condition: template
                 value_template: >
-                  {% if trigger_type == 'numeric' %}
-                    {{ states(trigger_entity) | float(0) > numeric_above | float(0) }}
+                  {% if numeric_entity | default([]) | length > 0 %}
+                    {{ states(numeric_entity) | float(0) > numeric_above | float(0) }}
                   {% else %}
-                    {{ states(trigger_entity) == trigger_state }}
+                    {{ states(state_entity) == alert_state }}
                   {% endif %}
-              - condition: template
-                value_template: >
-                  {{ (repeat_interval.hours | default(0)) * 3600
-                     + (repeat_interval.minutes | default(0)) * 60
-                     + (repeat_interval.seconds | default(0)) > 0 }}
             sequence:
-              - delay: !input repeat_interval
+              # Attendre l'intervalle OU un trigger de résolution (plus réactif)
+              - wait_for_trigger:
+                  - trigger: numeric_state
+                    entity_id: !input numeric_entity
+                    below: !input numeric_above
+                  - trigger: state
+                    entity_id: !input state_entity
+                    from: !input alert_state
+                timeout: !input repeat_interval
+                continue_on_timeout: true
+              # Si résolu pendant l'attente → sortir de la boucle
               - condition: template
                 value_template: >
-                  {% if trigger_type == 'numeric' %}
-                    {{ states(trigger_entity) | float(0) > numeric_above | float(0) }}
+                  {% if numeric_entity | default([]) | length > 0 %}
+                    {{ states(numeric_entity) | float(0) > numeric_above | float(0) }}
                   {% else %}
-                    {{ states(trigger_entity) == trigger_state }}
+                    {{ states(state_entity) == alert_state }}
                   {% endif %}
+              # Toujours en alerte → envoyer la répétition
               - action: notify.send_message
                 target:
-                  entity_id: "{{ notify_service }}"
+                  entity_id: !input notify_entity
                 data:
                   title: "{{ alert_title }}"
                   message: "{{ alert_message }}"
 
     # ── Retour à la normale ───────────────────────────────────────────────
-    # Condition : capteur revenu à la normale + message configuré
     - conditions:
-        - condition: template
-          value_template: >
-            {% if trigger_type == 'numeric' %}
-              {{ states(trigger_entity) | float(0) <= numeric_above | float(0) }}
-            {% else %}
-              {{ states(trigger_entity) != trigger_state }}
-            {% endif %}
-          alias: Capteur revenu à la normale
+        - condition: trigger
+          id:
+            - resolved_numeric
+            - resolved_state
         - condition: template
           value_template: "{{ resolved_title | length > 0 }}"
       sequence:
         - action: notify.send_message
           target:
-            entity_id: "{{ notify_service }}"
+            entity_id: !input notify_entity
           data:
             title: "{{ resolved_title }}"
             message: "{{ resolved_message }}"
