@@ -3,12 +3,12 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 3.0**
+    **Version: 4.0**
 
 
     Envoie une notification répétée tant qu'un capteur dépasse un seuil ou
     qu'un appareil est dans un état indésirable. Notifie aussi quand le
-    problème est résolu.
+    problème est résolu. Détecte aussi si le capteur ne répond plus.
 
 
     **Cas d'usage typiques :**
@@ -24,6 +24,8 @@ blueprint:
     2. Le trigger se déclenche quand le seuil/état est atteint pendant le délai de confirmation.
     3. La notification d'alerte est envoyée, puis répétée à intervalle régulier.
     4. Quand le problème se résout, une notification de retour à la normale est envoyée.
+    5. Si le capteur ne répond plus (unavailable ou données trop anciennes),
+       une notification dédiée est envoyée.
 
   domain: automation
   author: lobdt
@@ -160,6 +162,47 @@ blueprint:
           selector:
             duration: {}
 
+    # ─────────────────────────────────────────────────────
+    section_watchdog:
+      name: 4️⃣ Surveillance capteur mort (optionnel)
+      icon: mdi:wifi-off
+      collapsed: true
+      input:
+
+        max_age_minutes:
+          name: Âge maximum des données (minutes)
+          description: >
+            Si le capteur n'envoie plus de données depuis ce nombre de minutes,
+            une notification d'alerte est envoyée. Couvre aussi le cas
+            `unavailable` ou `unknown`.
+
+            Mettre à `0` pour désactiver cette surveillance.
+
+            Valeur recommandée : 60 min pour un capteur Zigbee sur pile.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 1440
+              step: 5
+              unit_of_measurement: min
+              mode: slider
+
+        watchdog_title:
+          name: Titre — Capteur mort
+          default: "📡 Capteur hors ligne"
+          selector:
+            text: {}
+
+        watchdog_message:
+          name: Message — Capteur mort
+          description: >
+            Message envoyé quand le capteur ne répond plus.
+          default: "Un capteur ne répond plus depuis trop longtemps !"
+          selector:
+            text:
+              multiline: true
+
 variables:
   numeric_entity: !input numeric_entity
   numeric_above: !input numeric_above
@@ -171,6 +214,16 @@ variables:
   resolved_title: !input resolved_title
   resolved_message: !input resolved_message
   repeat_interval: !input repeat_interval
+  max_age_minutes: !input max_age_minutes
+  watchdog_title: !input watchdog_title
+  watchdog_message: !input watchdog_message
+  # Entité surveillée (numérique ou état)
+  watched_entity: >
+    {% if numeric_entity | default([]) | length > 0 %}
+      {{ numeric_entity }}
+    {% else %}
+      {{ state_entity }}
+    {% endif %}
   # Secondes totales de l'intervalle — calculé une fois, utilisé dans while
   repeat_seconds: >
     {{ (repeat_interval.hours | default(0)) * 3600
@@ -206,6 +259,30 @@ trigger:
     from: !input alert_state
     id: resolved_state
 
+  # Trigger capteur unavailable/unknown
+  - trigger: state
+    entity_id: !input numeric_entity
+    to:
+      - unavailable
+      - unknown
+    for:
+      minutes: 5
+    id: watchdog_unavailable_numeric
+
+  - trigger: state
+    entity_id: !input state_entity
+    to:
+      - unavailable
+      - unknown
+    for:
+      minutes: 5
+    id: watchdog_unavailable_state
+
+  # Trigger watchdog périodique — vérifie l'âge des données toutes les heures
+  - trigger: time_pattern
+    hours: "/1"
+    id: watchdog_periodic
+
 condition: []
 
 action:
@@ -218,7 +295,6 @@ action:
             - alert_numeric
             - alert_state
       sequence:
-        # Première notification
         - action: notify.send_message
           target:
             entity_id: !input notify_entity
@@ -226,13 +302,10 @@ action:
             title: "{{ alert_title }}"
             message: "{{ alert_message }}"
 
-        # Répétition : attendre l'intervalle OU la résolution du problème
         - repeat:
             while:
-              # Continuer seulement si répétition activée (intervalle > 0)
               - condition: template
                 value_template: "{{ repeat_seconds > 0 }}"
-              # Continuer seulement si le problème persiste encore
               - condition: template
                 value_template: >
                   {% if numeric_entity | default([]) | length > 0 %}
@@ -241,7 +314,6 @@ action:
                     {{ states(state_entity) == alert_state }}
                   {% endif %}
             sequence:
-              # Attendre l'intervalle OU un trigger de résolution (plus réactif)
               - wait_for_trigger:
                   - trigger: numeric_state
                     entity_id: !input numeric_entity
@@ -251,7 +323,6 @@ action:
                     from: !input alert_state
                 timeout: !input repeat_interval
                 continue_on_timeout: true
-              # Si résolu pendant l'attente → sortir de la boucle
               - condition: template
                 value_template: >
                   {% if numeric_entity | default([]) | length > 0 %}
@@ -259,7 +330,6 @@ action:
                   {% else %}
                     {{ states(state_entity) == alert_state }}
                   {% endif %}
-              # Toujours en alerte → envoyer la répétition
               - action: notify.send_message
                 target:
                   entity_id: !input notify_entity
@@ -282,5 +352,43 @@ action:
           data:
             title: "{{ resolved_title }}"
             message: "{{ resolved_message }}"
+
+    # ── Capteur unavailable/unknown ───────────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id:
+            - watchdog_unavailable_numeric
+            - watchdog_unavailable_state
+        - condition: template
+          value_template: "{{ max_age_minutes > 0 }}"
+      sequence:
+        - action: notify.send_message
+          target:
+            entity_id: !input notify_entity
+          data:
+            title: "{{ watchdog_title }}"
+            message: "{{ watchdog_message }}"
+
+    # ── Watchdog périodique — données trop anciennes ──────────────────────
+    - conditions:
+        - condition: trigger
+          id: watchdog_periodic
+        - condition: template
+          value_template: "{{ max_age_minutes > 0 }}"
+        - condition: template
+          value_template: >
+            {% if watched_entity | length > 0 %}
+              {% set last = states[watched_entity].last_updated %}
+              {{ (now() - last).total_seconds() / 60 > max_age_minutes }}
+            {% else %}
+              false
+            {% endif %}
+      sequence:
+        - action: notify.send_message
+          target:
+            entity_id: !input notify_entity
+          data:
+            title: "{{ watchdog_title }}"
+            message: "{{ watchdog_message }}"
 
 mode: restart
