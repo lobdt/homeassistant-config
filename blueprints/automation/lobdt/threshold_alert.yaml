@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 4.0**
+    **Version: 4.1**
 
 
     Envoie une notification répétée tant qu'un capteur dépasse un seuil ou
@@ -26,6 +26,11 @@ blueprint:
     4. Quand le problème se résout, une notification de retour à la normale est envoyée.
     5. Si le capteur ne répond plus (unavailable ou données trop anciennes),
        une notification dédiée est envoyée.
+
+    **Changelog v4.1 :** correction d'un faux positif — la notification
+    "retour à la normale" ne se déclenche plus quand un capteur revient
+    d'un état `unavailable`/`unknown` (ex: reconnexion MQTT après un
+    redémarrage de Home Assistant) sans avoir réellement été en alerte.
 
   domain: automation
   author: lobdt
@@ -338,6 +343,9 @@ action:
                   message: "{{ alert_message }}"
 
     # ── Retour à la normale ───────────────────────────────────────────────
+    # v4.1 : garde ajoutée — ignore les faux positifs quand l'état précédent
+    # était unavailable/unknown (ex: reconnexion MQTT après reboot HA),
+    # au lieu d'une vraie sortie d'alerte.
     - conditions:
         - condition: trigger
           id:
@@ -345,6 +353,10 @@ action:
             - resolved_state
         - condition: template
           value_template: "{{ resolved_title | length > 0 }}"
+        - condition: template
+          value_template: >
+            {{ trigger.from_state is not none and
+               trigger.from_state.state not in ['unavailable', 'unknown', 'none'] }}
       sequence:
         - action: notify.send_message
           target:
