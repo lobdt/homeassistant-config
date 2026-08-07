@@ -1,23 +1,25 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.2.0  —  07/08/2026
+#  Version : 2.3.0  —  07/08/2026
 #
 #  CHANGELOG
-#  2.2.0 - Remplacement de min/max independants pour la Lampe 2 par un
-#          UNIQUE coefficient de ratio par rapport a la Lampe 1 (reference).
-#          Motif : calibrer min et max separement sur la Lampe 2 ne garantit
-#          pas un ratio constant sur toute la course de la molette (mesure
-#          terrain : max correctement calibre a x6.8, mais min derive a x4).
-#          Avec un coefficient unique, le ratio mesure (ex: x7) s'applique
-#          identiquement du plus petit cran au plus gros, sans risque de
-#          derive entre les deux bouts de la courbe.
-#          Limite physique assumee : si le pas derive tombe sous la
-#          resolution de la lampe (~0.4 %), elle peut ne pas bouger sur un
-#          micro-geste. Comportement honnete, pas un defaut du blueprint.
-#  2.1.0 - Elargissement des plages de calibration min/max (retire en 2.2.0
-#          au profit du coefficient, conserve ici pour historique).
-#  2.0.0 - Support multi-lampes sur l'option B, fix depart a 0%, robustesse
-#          lampes unavailable.
+#  2.3.0 - La Lampe 2 n'est plus pilotee par un PAS divise, mais par une
+#          POSITION ABSOLUE derivee de la Lampe 1.
+#          Motif : Home Assistant convertit brightness_step_pct en ENTIER.
+#          Un pas divise par le coefficient (ex: 2 / 7 = 0.29) etait arrondi
+#          a 0 ou 1, ce qui detruisait le ratio sur tous les petits gestes
+#          (mesure terrain : ratio effectif 2 au lieu de 7) et accumulait
+#          l'erreur cran apres cran.
+#          Desormais : niveau_vise_L1 = niveau_actuel_L1 + pas ; puis
+//          cible_L2 = niveau_vise_L1 / coefficient, envoyee en absolu.
+#          Le ratio est recalcule a chaque rotation depuis l'etat reel, donc
+#          aucune derive cumulative possible, a toutes les vitesses.
+#          Corollaire : le "pas minimum" de la Lampe 2 disparait (elle ne
+#          fait plus de pas). La Lampe 1 garde min/max inchanges.
+#  2.2.0 - Introduction du coefficient de ratio (division du pas) —
+#          remplace en 2.3.0, l'arrondi entier de HA le rendait inoperant.
+#  2.1.0 - Elargissement des plages min/max (obsolete depuis 2.2.0).
+#  2.0.0 - Support multi-lampes, fix depart a 0%, robustesse unavailable.
 #  1.0.0 - Version initiale : dimming cubique, 2 options mono-lampe.
 #
 #  NOTE Adaptive Lighting : si AL pilote une lampe controlee ici, activer
@@ -26,34 +28,40 @@
 #  quand "intercept" est desactive.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.2.0
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.3.0
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.2.0**
+    **Version 2.3.0**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
     Zigbee2MQTT, avec un **dimming dynamique à courbe cubique**.
 
     ## ✨ Fonctions clés
-    - **Multi-lampes** : l'option B pilote 1 ou 2 lampes. La Lampe 1 est la
-      référence (min/max calibrés normalement). La Lampe 2, si présente, suit
-      la Lampe 1 via un **coefficient de ratio unique** — pas de min/max
-      séparés à maintenir cohérents.
+    - **Multi-lampes proportionnel** : l'option B pilote 1 ou 2 lampes. La
+      Lampe 1 est la référence (pas relatif, min/max calibrés). La Lampe 2
+      suit en **position absolue**, toujours à `niveau L1 / coefficient`.
     - **Départ à 0 %** : une lampe éteinte démarre au premier cran depuis 0.
 
     ## 🧠 Stratégie de dimming
-    - Lampe **allumée** → `brightness_step_pct` relatif (pas de latence).
-    - Lampe **éteinte** + rotation ↑ → `brightness_pct` absolu, départ à 0.
-    - Lampe **éteinte** + rotation ↓ → aucune action.
-    - Lampe **indisponible** → ignorée.
+    - **Lampe 1 / Option A** — allumée → `brightness_step_pct` relatif (la
+      lampe calcule elle-même : pas de latence, pas de saturation Zigbee).
+      Éteinte + rotation ↑ → `brightness_pct` absolu, départ à 0.
+    - **Lampe 2** — toujours en `brightness_pct` **absolu**, recalculé à
+      chaque rotation depuis le niveau visé de la Lampe 1. Aucun pas relatif,
+      donc aucune dérive d'arrondi cumulative.
+    - Rotation ↓ amenant sous 0 % → extinction. Lampe indisponible → ignorée.
 
     ## 📐 Calibrer deux lampes de puissances différentes
     Allumer les deux lampes, chercher le pourcentage de chacune qui donne le
     même rendu visuel, et diviser : X % Lampe 1 = Y % Lampe 2 → coefficient
-    = X / Y. Exemple mesuré : 7 % Armoire ≈ 1 % KAJPLATS → coefficient = 7.
-    Ce seul chiffre remplace le calibrage séparé du min et du max de la
-    Lampe 2 — le ratio reste juste à n'importe quelle vitesse de rotation.
+    = X / Y. Exemple mesuré : 7 % Armoire ≈ 1 % KAJPLATS → coefficient 7.
+
+    ## ⚠️ Limite matérielle assumée
+    Les lampes résolvent la luminosité par paliers d'environ 0,4 %. Sur un
+    micro-geste, la Lampe 2 peut donc ne pas bouger visuellement alors que la
+    Lampe 1 bouge. Le ratio reste exact : c'est l'affichage qui ne peut pas
+    être plus fin.
 
     ## ⚠️ Adaptive Lighting
     Si Adaptive Lighting pilote une des lampes, activer
@@ -109,6 +117,9 @@ blueprint:
                 - domain: light
         light_option_a_max:
           name: Option A — Puissance max de la courbe
+          description: >
+            Amplitude maximale du dimming (plus haut = plus sensible sur les
+            gros coups). 110 = un gros coup atteint ~100 %.
           default: 110
           selector:
             number:
@@ -118,12 +129,13 @@ blueprint:
               mode: slider
         light_option_a_min:
           name: Option A — Pas minimum
+          description: Pas minimum garanti sur un tout petit cran lent (en %).
           default: 3
           selector:
             number:
-              min: 0.5
+              min: 1
               max: 10
-              step: 0.5
+              step: 1
               mode: slider
 
         light_option_b_name:
@@ -135,8 +147,8 @@ blueprint:
         light_option_b1_entity:
           name: Option B — Lampe 1 (référence, obligatoire)
           description: >
-            Lampe de référence. Son min/max définit la courbe ; la Lampe 2
-            (si présente) la suit via un coefficient, voir ci-dessous.
+            Lampe de référence. Elle est pilotée normalement ; la Lampe 2 se
+            cale sur elle via le coefficient.
           selector:
             entity:
               filter:
@@ -155,17 +167,17 @@ blueprint:
           default: 2
           selector:
             number:
-              min: 0.5
+              min: 1
               max: 10
-              step: 0.5
+              step: 1
               mode: slider
 
         light_option_b2_entity:
           name: Option B — Lampe 2 (optionnelle)
           description: >
             Deuxième lampe du slot B. Laisser vide si une seule lampe suffit.
-            Son pas est dérivé de celui de la Lampe 1 via le coefficient
-            ci-dessous — pas de min/max séparés à régler.
+            Elle n'a ni min ni max : sa luminosité est toujours celle de la
+            Lampe 1 divisée par le coefficient ci-dessous.
           default: []
           selector:
             entity:
@@ -177,8 +189,7 @@ blueprint:
             Combien de fois la Lampe 2 est plus lumineuse que la Lampe 1, à
             % égal. Mesure : allumer les 2, ajuster jusqu'à rendu visuel
             équivalent, diviser % Lampe 1 par % Lampe 2. Exemple : 7 % / 1 %
-            → coefficient 7. Le pas envoyé à la Lampe 2 = pas de la Lampe 1
-            divisé par ce nombre, à chaque rotation.
+            → coefficient 7.
           default: 7
           selector:
             number:
@@ -189,6 +200,9 @@ blueprint:
 
         step_normalize:
           name: Normalisation du step_size
+          description: >
+            Valeur de `action_step_size` considérée comme « gros coup »
+            maximal. 100 est un bon défaut. Baisser = plus sensible.
           default: 100
           selector:
             number:
@@ -199,6 +213,9 @@ blueprint:
 
         action_on_rotate:
           name: Action supplémentaire à chaque rotation
+          description: >
+            Action(s) optionnelle(s) exécutée(s) à CHAQUE cran de molette.
+            Typiquement : activer un `input_boolean` de bypass manuel.
           default: []
           selector:
             action:
@@ -223,10 +240,12 @@ blueprint:
       icon: mdi:numeric-2-circle-outline
       input:
         button_2_short:
+          name: Bouton 2 — Appui court
           default: []
           selector:
             action:
         button_2_long:
+          name: Bouton 2 — Appui long
           default: []
           selector:
             action:
@@ -236,10 +255,12 @@ blueprint:
       icon: mdi:numeric-3-circle-outline
       input:
         button_3_short:
+          name: Bouton 3 — Appui court
           default: []
           selector:
             action:
         button_3_long:
+          name: Bouton 3 — Appui long
           default: []
           selector:
             action:
@@ -249,10 +270,12 @@ blueprint:
       icon: mdi:numeric-4-circle-outline
       input:
         button_4_short:
+          name: Bouton 4 — Appui court
           default: []
           selector:
             action:
         button_4_long:
+          name: Bouton 4 — Appui long
           default: []
           selector:
             action:
@@ -303,70 +326,87 @@ variables:
   ref_entity: "{{ opt_a_entity if selected == opt_a_name else opt_b1_entity }}"
   ref_min: "{{ opt_a_min if selected == opt_a_name else opt_b1_min }}"
   ref_max: "{{ opt_a_max if selected == opt_a_name else opt_b1_max }}"
-  ref_step: "{{ [ [ (((norm | float) ** 3) * (ref_max | float)) | round(2), 100 ] | min, ref_min | float ] | max }}"
+  ref_state: "{{ states(ref_entity) }}"
+  ref_off: "{{ ref_state == 'off' }}"
 
-  # ── Construction de la liste des lampes à piloter ───────────────────
-  #    Lampe 2 dérivée du pas de référence via le coefficient (pas de
-  #    min/max séparés). Lampes unavailable/unknown exclues.
-  targets: >
-    {% set ns = namespace(items=[]) %}
-    {% set st_ref = states(ref_entity) %}
-    {% if st_ref in ['on', 'off'] %}
-      {% set ns.items = ns.items + [{
-           'entity': ref_entity,
-           'step': ref_step,
-           'signed': ref_step if direction == 'up' else (ref_step * -1),
-           'is_off': st_ref == 'off'
-         }] %}
-    {% endif %}
-    {% if selected != opt_a_name and opt_b2_entity %}
-      {% set st2 = states(opt_b2_entity) %}
-      {% if st2 in ['on', 'off'] %}
-        {% set step2 = (ref_step / (opt_b2_ratio | float)) | round(2) %}
-        {% set ns.items = ns.items + [{
-             'entity': opt_b2_entity,
-             'step': step2,
-             'signed': step2 if direction == 'up' else (step2 * -1),
-             'is_off': st2 == 'off'
-           }] %}
-      {% endif %}
-    {% endif %}
-    {{ ns.items }}
+  # Pas de la référence (entier : HA arrondit de toute façon)
+  ref_step: >
+    {{ [ [ (((norm | float) ** 3) * (ref_max | float)) | round(0) | int, 100 ] | min, ref_min | int ] | max }}
+  ref_signed: "{{ ref_step if direction == 'up' else (ref_step * -1) }}"
+
+  # Niveau actuel de la référence, en % (0 si éteinte)
+  ref_current_pct: >
+    {{ 0 if ref_off else ((state_attr(ref_entity, 'brightness') | default(0) | int) / 255 * 100) }}
+
+  # Niveau que la référence va atteindre après ce cran
+  ref_target_pct: >
+    {{ [ [ (ref_current_pct | float) + (ref_signed | int), 0 ] | max, 100 ] | min }}
+
+  # Cible ABSOLUE de la Lampe 2, dérivée du niveau visé de la référence
+  l2_target_pct: >
+    {{ ((ref_target_pct | float) / (opt_b2_ratio | float)) | round(0) | int }}
+
+  # La Lampe 2 est-elle concernée par cette rotation ?
+  l2_active: >
+    {{ selected != opt_a_name and opt_b2_entity and states(opt_b2_entity) in ['on', 'off'] }}
 
 action:
   - choose:
+      # ── MOLETTE ──────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act in ['brightness_step_up', 'brightness_step_down'] }}"
         sequence:
-          - repeat:
-              for_each: "{{ targets }}"
-              sequence:
-                - choose:
-                    - conditions:
-                        - condition: template
-                          value_template: "{{ repeat.item.is_off and direction == 'up' }}"
-                      sequence:
-                        - action: light.turn_on
-                          target:
-                            entity_id: "{{ repeat.item.entity }}"
-                          data:
-                            brightness_pct: "{{ repeat.item.step }}"
-                            transition: 0
-                    - conditions:
-                        - condition: template
-                          value_template: "{{ not repeat.item.is_off }}"
-                      sequence:
-                        - action: light.turn_on
-                          target:
-                            entity_id: "{{ repeat.item.entity }}"
-                          data:
-                            brightness_step_pct: "{{ repeat.item.signed }}"
-                            transition: 0
+          # ── Lampe de référence ────────────────────────────────────
+          - choose:
+              # Éteinte + rotation ↑ → départ absolu depuis 0 %
+              - conditions:
+                  - condition: template
+                    value_template: "{{ ref_off and direction == 'up' and ref_state in ['on','off'] }}"
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ ref_entity }}"
+                    data:
+                      brightness_pct: "{{ ref_step }}"
+                      transition: 0
+              # Allumée → pas relatif (rapide, sans latence)
+              - conditions:
+                  - condition: template
+                    value_template: "{{ not ref_off and ref_state in ['on','off'] }}"
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ ref_entity }}"
+                    data:
+                      brightness_step_pct: "{{ ref_signed }}"
+                      transition: 0
+            # Éteinte + rotation ↓ → aucune branche : reste éteinte
+
+          # ── Lampe 2 : position absolue proportionnelle ─────────────
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ l2_active and l2_target_pct > 0 }}"
+                sequence:
+                  - action: light.turn_on
+                    target:
+                      entity_id: "{{ opt_b2_entity }}"
+                    data:
+                      brightness_pct: "{{ l2_target_pct }}"
+                      transition: 0
+              - conditions:
+                  - condition: template
+                    value_template: "{{ l2_active and l2_target_pct <= 0 and states(opt_b2_entity) == 'on' }}"
+                sequence:
+                  - action: light.turn_off
+                    target:
+                      entity_id: "{{ opt_b2_entity }}"
 
           - alias: Action supplémentaire optionnelle sur rotation
             sequence: !input action_on_rotate
 
+      # ── BOUTONS 1-4 ──────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_1_press_release' }}"
