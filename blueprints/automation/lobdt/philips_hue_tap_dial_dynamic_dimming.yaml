@@ -1,14 +1,21 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.5.0  —  07/08/2026
+#  Version : 2.6.0  —  07/08/2026
 #
 #  CHANGELOG
-#  2.5.0 - Quand la Lampe 1 atteint 100 %, la Lampe 2 est forcee a 100 %
-#          aussi (au lieu de niveau x multiplicateur). Le 100% doit rester
-#          un vrai "tout allume" sur les deux lampes, pas une position
-#          intermediaire. Saut net assume : juste sous 100% sur la Lampe 1,
-#          la Lampe 2 suit encore le multiplicateur (ex: 99% -> ~79%), puis
-#          bondit a 100% des que la Lampe 1 atteint 100% pile.
+#  2.6.0 - Le saut net a 100% introduit en 2.5.0 est remplace par une
+#          transition progressive, dont la taille est DERIVEE AUTOMATIQUEMENT
+#          du multiplicateur (aucun nouveau champ UI) :
+#            blend_start = min(100 * multiplicateur, 100)
+#          Au-dela de blend_start, la Lampe 2 interpole lineairement entre
+#          "blend_start * multiplicateur" et 100%, pour arriver pile a 100%
+#          quand la Lampe 1 atteint 100%. En dessous, comportement inchange
+#          (Lampe 2 = Lampe 1 * multiplicateur). Continuite verifiee a la
+#          jonction (blend_start) : les deux branches donnent la meme valeur,
+#          donc pas de micro-saut. Un multiplicateur proche de 1 donne une
+#          zone de transition etroite voire nulle (rien a rattraper) ; un
+#          multiplicateur eloigne de 1 donne une transition plus large.
+#  2.5.0 - Saut net a 100% (remplace en 2.6.0).
 #  2.4.0 - Remplacement du ratio/diviseur par un MULTIPLICATEUR + un SEUIL BAS.
 #  2.3.0 - Lampe 2 pilotee en position absolue derivee de la Lampe 1.
 #  2.2.0 - Introduction du ratio (obsolete, remplace en 2.4.0).
@@ -23,11 +30,11 @@
 #  (intercept=true), peu importe ce que ce blueprint calcule.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.5.0
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.6.0
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.5.0**
+    **Version 2.6.0**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
     Zigbee2MQTT, avec un **dimming dynamique à courbe cubique**.
@@ -36,7 +43,9 @@ blueprint:
     - **Multi-lampes proportionnel** : l'option B pilote 1 ou 2 lampes. La
       Lampe 1 est la référence. La Lampe 2 suit en position absolue :
       `niveau L1 × multiplicateur`, sauf sous un seuil bas où elle reste
-      éteinte, et sauf à 100 % où elle est forcée à 100 % elle aussi.
+      éteinte, et sauf tout en haut où elle rejoint **progressivement** 100 %
+      (zone de transition calculée automatiquement à partir du
+      multiplicateur, aucun réglage supplémentaire requis).
     - **Départ à 0 %** : une lampe éteinte démarre au premier cran depuis 0.
 
     ## 🧠 Stratégie de dimming
@@ -44,9 +53,15 @@ blueprint:
       Éteinte + rotation ↑ → `brightness_pct` absolu, départ à 0.
     - **Lampe 2** — toujours en `brightness_pct` absolu :
       - Niveau visé L1 < seuil bas → Lampe 2 éteinte.
-      - Niveau visé L1 = 100 % → Lampe 2 forcée à 100 % (saut net assumé).
-      - Sinon → Lampe 2 = niveau visé L1 × multiplicateur.
+      - Niveau visé L1 < `100 × multiplicateur` → Lampe 2 = niveau visé × multiplicateur.
+      - Au-delà → transition linéaire jusqu'à 100 % pile à 100 % sur L1.
     - Rotation ↓ amenant sous 0 % → extinction. Lampe indisponible → ignorée.
+
+    ## 📐 Calibrer deux lampes de puissances différentes
+    Allumer les deux lampes à plusieurs niveaux (ex. 25 % et 50 % sur la
+    Lampe 1), régler la Lampe 2 au même rendu visuel, et calculer
+    % Lampe 2 / % Lampe 1 → c'est le multiplicateur. La zone de transition
+    finale se déduit seule de cette valeur.
 
     ## ⚠️ Adaptive Lighting
     Si AL pilote une des lampes, activer `adapt_only_on_bare_turn_on` sur
@@ -162,9 +177,10 @@ blueprint:
         light_option_b2_multiplier:
           name: Option B — Lampe 2 — Multiplicateur
           description: >
-            Niveau de la Lampe 2 = niveau visé de la Lampe 1 × ce nombre
-            (sauf tout en bas et tout en haut, voir description du blueprint).
-          default: 0.8
+            Niveau de la Lampe 2 = niveau visé de la Lampe 1 × ce nombre.
+            La zone de transition finale vers 100 % est déduite automatiquement
+            de cette valeur (aucun réglage séparé nécessaire).
+          default: 0.7
           selector:
             number:
               min: 0.05
@@ -319,14 +335,22 @@ variables:
   ref_target_pct: >
     {{ [ [ (ref_current_pct | float) + (ref_signed | int), 0 ] | max, 100 ] | min }}
 
-  # ── Lampe 2 : seuil bas, plafond force a 100, sinon multiplicateur ──
+  # ── Lampe 2 : seuil bas, multiplicateur, transition auto-derivee ────
+  #    blend_start = min(100 * multiplicateur, 100) : au-dela, on interpole
+  #    lineairement jusqu'a 100% pile a 100% sur la Lampe 1. Continuite
+  #    garantie a la jonction (les deux branches donnent la meme valeur).
   l2_target_pct: >
+    {% set m = opt_b2_multiplier | float %}
+    {% set blend_start = [100 * m, 100] | min %}
     {% if (ref_target_pct | float) < (opt_b2_low_threshold | float) %}
       0
-    {% elif (ref_target_pct | float) >= 100 %}
-      100
+    {% elif (ref_target_pct | float) >= blend_start %}
+      {% set start_l2 = blend_start * m %}
+      {% set span = 100 - blend_start %}
+      {% set progress = 0 if span <= 0 else ((ref_target_pct | float) - blend_start) / span %}
+      {{ (start_l2 + progress * (100 - start_l2)) | round(0) | int }}
     {% else %}
-      {{ ((ref_target_pct | float) * (opt_b2_multiplier | float)) | round(0) | int }}
+      {{ ((ref_target_pct | float) * m) | round(0) | int }}
     {% endif %}
 
   l2_active: >
