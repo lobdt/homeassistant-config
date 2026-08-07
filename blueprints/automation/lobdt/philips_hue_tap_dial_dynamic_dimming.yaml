@@ -1,73 +1,58 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.4.0  —  07/08/2026
+#  Version : 2.5.0  —  07/08/2026
 #
 #  CHANGELOG
-#  2.4.0 - Remplacement du ratio/diviseur par un MULTIPLICATEUR + un SEUIL BAS,
-#          tous deux ajustables via l'UI.
-#          Motif : mesures terrain sur 3 points (Armoire/Meuble) :
-#            7% / 1%   -> ratio 7.0
-#            25% / 20% -> ratio 1.25
-#            50% / 40% -> ratio 1.25
-#          Les points 25% et 50% concordent parfaitement (relation lineaire,
-#          Meuble = Armoire x 0.8), seul le point bas (7%) decroche : typique
-#          d'une LED dans ses tout premiers pourcents. Plutot que de forcer
-#          un ratio unique fautif sur toute la plage, ou de batir un systeme
-#          a N paliers non calibres, on isole les deux comportements reels :
-#          - En dessous du seuil bas : Lampe 2 eteinte (pas de ratio fiable).
-#          - Au-dessus : Lampe 2 = Lampe 1 x multiplicateur (lineaire, valide
-#            par 2 mesures concordantes).
-#          Champs `light_option_b2_multiplier` (defaut 0.8) et
-#          `light_option_b2_low_threshold` (defaut 10) exposes dans l'UI.
-#  2.3.0 - Lampe 2 pilotee en position absolue derivee de la Lampe 1 (fix de
-#          l'arrondi entier qui cassait un ratio/pas divise).
+#  2.5.0 - Quand la Lampe 1 atteint 100 %, la Lampe 2 est forcee a 100 %
+#          aussi (au lieu de niveau x multiplicateur). Le 100% doit rester
+#          un vrai "tout allume" sur les deux lampes, pas une position
+#          intermediaire. Saut net assume : juste sous 100% sur la Lampe 1,
+#          la Lampe 2 suit encore le multiplicateur (ex: 99% -> ~79%), puis
+#          bondit a 100% des que la Lampe 1 atteint 100% pile.
+#  2.4.0 - Remplacement du ratio/diviseur par un MULTIPLICATEUR + un SEUIL BAS.
+#  2.3.0 - Lampe 2 pilotee en position absolue derivee de la Lampe 1.
 #  2.2.0 - Introduction du ratio (obsolete, remplace en 2.4.0).
 #  2.1.0 - Elargissement des plages min/max (obsolete depuis 2.2.0).
 #  2.0.0 - Support multi-lampes, fix depart a 0%, robustesse unavailable.
 #  1.0.0 - Version initiale : dimming cubique, 2 options mono-lampe.
 #
 #  NOTE Adaptive Lighting : si AL pilote une lampe controlee ici, activer
-#  "adapt_only_on_bare_turn_on" sur l'instance AL correspondante. Sinon AL
-#  reecrit la luminosite juste apres chaque commande de la molette, meme
-#  quand "intercept" est desactive.
+#  "adapt_only_on_bare_turn_on" sur l'instance AL correspondante. Verifier
+#  aussi min_brightness/max_brightness sur chaque instance AL : ce sont des
+#  plafonds independants qui s'appliquent des qu'AL reprend la main
+#  (intercept=true), peu importe ce que ce blueprint calcule.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.4.0
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.5.0
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.4.0**
+    **Version 2.5.0**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
     Zigbee2MQTT, avec un **dimming dynamique à courbe cubique**.
 
     ## ✨ Fonctions clés
     - **Multi-lampes proportionnel** : l'option B pilote 1 ou 2 lampes. La
-      Lampe 1 est la référence (pas relatif, min/max calibrés). La Lampe 2
-      suit en **position absolue** : `niveau L1 × multiplicateur`, sauf sous
-      un seuil bas où elle reste éteinte.
+      Lampe 1 est la référence. La Lampe 2 suit en position absolue :
+      `niveau L1 × multiplicateur`, sauf sous un seuil bas où elle reste
+      éteinte, et sauf à 100 % où elle est forcée à 100 % elle aussi.
     - **Départ à 0 %** : une lampe éteinte démarre au premier cran depuis 0.
 
     ## 🧠 Stratégie de dimming
     - **Lampe 1 / Option A** — allumée → `brightness_step_pct` relatif.
       Éteinte + rotation ↑ → `brightness_pct` absolu, départ à 0.
-    - **Lampe 2** — toujours en `brightness_pct` absolu, recalculé à chaque
-      rotation depuis le niveau visé de la Lampe 1 :
-      - Si niveau visé < seuil bas → Lampe 2 éteinte.
-      - Sinon → Lampe 2 = niveau visé × multiplicateur.
+    - **Lampe 2** — toujours en `brightness_pct` absolu :
+      - Niveau visé L1 < seuil bas → Lampe 2 éteinte.
+      - Niveau visé L1 = 100 % → Lampe 2 forcée à 100 % (saut net assumé).
+      - Sinon → Lampe 2 = niveau visé L1 × multiplicateur.
     - Rotation ↓ amenant sous 0 % → extinction. Lampe indisponible → ignorée.
 
-    ## 📐 Calibrer deux lampes de puissances différentes
-    Allumer les deux lampes à plusieurs niveaux (ex. 25 % et 50 % sur la
-    Lampe 1), régler la Lampe 2 au même rendu visuel à chaque fois, et
-    calculer % Lampe 2 / % Lampe 1. Si le ratio est stable sur la plage utile
-    (comme observé ici : 0.8 entre 25 % et 50 %), c'est le multiplicateur.
-    Le point où le ratio décroche fortement (souvent < 10-15 %) donne le
-    seuil bas.
-
     ## ⚠️ Adaptive Lighting
-    Si Adaptive Lighting pilote une des lampes, activer
-    **`adapt_only_on_bare_turn_on`** sur l'instance AL concernée.
+    Si AL pilote une des lampes, activer `adapt_only_on_bare_turn_on` sur
+    l'instance concernée, et vérifier `min_brightness`/`max_brightness` —
+    ces bornes s'appliquent dès qu'AL reprend la main (`intercept: true`),
+    indépendamment de ce blueprint.
 
     ## 📋 Prérequis
     - Philips Hue Tap Dial Switch (RDM002) appairé dans **Zigbee2MQTT**
@@ -177,8 +162,8 @@ blueprint:
         light_option_b2_multiplier:
           name: Option B — Lampe 2 — Multiplicateur
           description: >
-            Niveau de la Lampe 2 = niveau visé de la Lampe 1 × ce nombre.
-            Exemple mesuré : Armoire 25 % ↔ Meuble 20 % → 0.8.
+            Niveau de la Lampe 2 = niveau visé de la Lampe 1 × ce nombre
+            (sauf tout en bas et tout en haut, voir description du blueprint).
           default: 0.8
           selector:
             number:
@@ -190,9 +175,8 @@ blueprint:
           name: Option B — Lampe 2 — Seuil bas (% de la Lampe 1)
           description: >
             En dessous de ce niveau sur la Lampe 1, la Lampe 2 reste éteinte
-            plutôt que de suivre le multiplicateur (souvent faux tout en bas
-            de plage). Mettre à 0 pour désactiver ce seuil.
-          default: 10
+            plutôt que de suivre le multiplicateur. Mettre à 0 pour désactiver.
+          default: 16
           selector:
             number:
               min: 0
@@ -335,10 +319,12 @@ variables:
   ref_target_pct: >
     {{ [ [ (ref_current_pct | float) + (ref_signed | int), 0 ] | max, 100 ] | min }}
 
-  # ── Lampe 2 : seuil bas puis multiplicateur linéaire ────────────
+  # ── Lampe 2 : seuil bas, plafond force a 100, sinon multiplicateur ──
   l2_target_pct: >
     {% if (ref_target_pct | float) < (opt_b2_low_threshold | float) %}
       0
+    {% elif (ref_target_pct | float) >= 100 %}
+      100
     {% else %}
       {{ ((ref_target_pct | float) * (opt_b2_multiplier | float)) | round(0) | int }}
     {% endif %}
