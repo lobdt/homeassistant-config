@@ -1,50 +1,60 @@
+# =============================================================================
+#  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
+#  Version : 2.0.0  —  07/08/2026
+#
+#  CHANGELOG
+#  2.0.0 - Support multi-lampes sur l'option B : jusqu'a 2 lampes, chacune
+#          avec son propre couple min/max (utile quand les flux lumineux
+#          different). Bonus : envoi individuel par lampe, ce qui evite la
+#          limite de debit des groupes Zigbee (~1 commande/seconde).
+#        - Fix : une lampe eteinte demarre desormais a 0 % au premier cran.
+#          Avant, brightness_step_pct s'appliquait sur la derniere luminosite
+#          memorisee par la lampe, la rallumant a un niveau imprevisible.
+#          Strategie hybride : absolu au premier cran depuis l'extinction,
+#          relatif ensuite (voir section "Strategie de dimming").
+#        - Robustesse : les lampes unavailable/unknown sont ignorees au lieu
+#          d'etre traitees comme eteintes.
+#  1.0.0 - Version initiale : dimming cubique, 2 options mono-lampe.
+# =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique (Z2M / MQTT)
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.0.0
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
+    **Version 2.0.0**
 
-    Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via Zigbee2MQTT,
-    avec un **dimming dynamique à courbe cubique** : tourner doucement la molette
-    ajuste finement la luminosité (≈6 %), un gros coup rapide l'envoie quasiment
-    à fond (≈90-100 %).
+    Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
+    Zigbee2MQTT, avec un **dimming dynamique à courbe cubique** : tourner
+    doucement la molette ajuste finement la luminosité (≈6 %), un gros coup
+    rapide l'envoie quasiment à fond (≈90-100 %).
 
+    ## ✨ Nouveautés v2.0.0
+    - **Multi-lampes** : l'option B pilote jusqu'à 2 lampes, chacune avec son
+      propre couple min/max — indispensable quand les lampes du groupe n'ont
+      pas le même flux lumineux.
+    - **Départ à 0 %** : une lampe éteinte démarre au premier cran depuis 0,
+      au lieu de se rallumer à sa dernière luminosité mémorisée.
 
-    ## ✨ Pourquoi ce blueprint
-
-    Les approches classiques (blueprints génériques, step fixe) saturent le réseau
-    Zigbee quand on tourne vite : la lampe reçoit une rafale de commandes et laggue.
-    Ici on lit directement `action_step_size` du message MQTT (la vitesse de rotation
-    rapportée par la molette), on applique une **courbe cubique** et on envoie un
-    seul `brightness_step_pct` avec `transition: 0`. Résultat : fluide, granulaire,
-    sans lag.
-
-
-    ## 🔧 Fonctions
-
-    - **Molette** : dim dynamique de la lampe sélectionnée (courbe cubique réglable)
-
-    - **Sélection de lampe** : un bouton bascule entre 2 lampes (via un `input_select`)
-
-    - **Boutons** : 4 boutons configurables (court + long) avec actions personnalisées
-
-    - **Retour auto** : un `input_text` ramène le contexte molette par défaut
-
+    ## 🧠 Stratégie de dimming
+    - Lampe **allumée** → `brightness_step_pct` **relatif** : c'est la lampe
+      qui calcule, donc aucun aller-retour d'état. Pas de latence, pas de
+      saturation Zigbee en rotation rapide. C'est le comportement d'origine,
+      volontairement conservé.
+    - Lampe **éteinte** + rotation ↑ → `brightness_pct` **absolu** pour ce seul
+      premier cran, garantissant un départ depuis 0. Aucun risque de latence
+      ici : par définition il n'y a pas d'état antérieur à lire.
+    - Lampe **éteinte** + rotation ↓ → aucune action, elle reste éteinte.
+    - Lampe **indisponible** → ignorée.
 
     ## 📋 Prérequis
-
     - Philips Hue Tap Dial Switch (RDM002) appairé dans **Zigbee2MQTT**
-
-    - Un helper `input_select` listant les 2 lampes (ex. options "Plafond", "Armoire")
-
-    - Un helper `input_text` pour le suivi du dernier bouton pressé
-
+    - Un helper `input_select` à 2 options, dont les noms correspondent
+      exactement aux champs "Nom dans l'input_select" ci-dessous
     - Home Assistant 2024.10.0 ou plus récent
-
   domain: automation
   homeassistant:
     min_version: "2024.10.0"
-  source_url: https://github.com/local/tap-dial-dynamic-dimming
+  source_url: https://github.com/lobdt/homeassistant-config/blob/main/blueprints/automation/lobdt/philips_hue_tap_dial_dynamic_dimming.yaml
 
   input:
     # ──────────────────────────────────────────────────────────────
@@ -69,9 +79,9 @@ blueprint:
         light_selector:
           name: Sélecteur de lampe (input_select)
           description: >
-            Helper `input_select` à 2 options qui détermine quelle lampe la molette
-            contrôle. Les noms des 2 options doivent correspondre exactement aux
-            valeurs saisies plus bas (Option A / Option B).
+            Helper `input_select` à 2 options qui détermine ce que la molette
+            contrôle. Les noms des 2 options doivent correspondre exactement
+            aux valeurs saisies plus bas (Option A / Option B).
           selector:
             entity:
               filter:
@@ -95,9 +105,9 @@ blueprint:
         light_option_a_max:
           name: Option A — Puissance max de la courbe
           description: >
-            Amplitude maximale du dimming pour cette lampe (plus haut = plus sensible
-            sur les gros coups). 110 = un gros coup atteint ~100 %. Baisser pour
-            une lampe qu'on veut garder plus douce.
+            Amplitude maximale du dimming pour cette lampe (plus haut = plus
+            sensible sur les gros coups). 110 = un gros coup atteint ~100 %.
+            Baisser pour une lampe qu'on veut garder plus douce.
           default: 110
           selector:
             number:
@@ -120,23 +130,22 @@ blueprint:
         light_option_b_name:
           name: Option B — Nom dans l'input_select
           description: Le nom EXACT de la 2ᵉ option (sensible à la casse).
-          default: "Chambre-Armoire"
+          default: "Chambre-Ambiance"
           selector:
             text:
 
-        light_option_b_entity:
-          name: Option B — Lampe contrôlée
-          description: La lampe à piloter quand l'option B est sélectionnée.
+        light_option_b1_entity:
+          name: Option B — Lampe 1 (obligatoire)
+          description: Première lampe pilotée quand l'option B est sélectionnée.
           selector:
             entity:
               filter:
                 - domain: light
 
-        light_option_b_max:
-          name: Option B — Puissance max de la courbe
+        light_option_b1_max:
+          name: Option B — Lampe 1 — Puissance max de la courbe
           description: >
-            Amplitude maximale du dimming pour la lampe B. Mettre plus haut qu'A si
-            cette lampe doit être plus réactive (utile pour un ruban LED plus lent).
+            Amplitude maximale du dimming pour cette lampe.
           default: 130
           selector:
             number:
@@ -145,10 +154,48 @@ blueprint:
               step: 5
               mode: slider
 
-        light_option_b_min:
-          name: Option B — Pas minimum
+        light_option_b1_min:
+          name: Option B — Lampe 1 — Pas minimum
           description: Pas minimum garanti sur un tout petit cran lent (en %).
           default: 2
+          selector:
+            number:
+              min: 1
+              max: 10
+              step: 1
+              mode: slider
+
+        light_option_b2_entity:
+          name: Option B — Lampe 2 (optionnelle)
+          description: >
+            Deuxième lampe du slot B, si le groupe en contient plusieurs.
+            Laisser vide si une seule lampe suffit.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: light
+
+        light_option_b2_max:
+          name: Option B — Lampe 2 — Puissance max de la courbe
+          description: >
+            À calibrer selon le flux réel de cette lampe. Une lampe PLUS
+            puissante que sa voisine se règle avec un max plus BAS pour rester
+            visuellement équilibrée. Valeur de départ prudente : 90.
+          default: 90
+          selector:
+            number:
+              min: 50
+              max: 200
+              step: 5
+              mode: slider
+
+        light_option_b2_min:
+          name: Option B — Lampe 2 — Pas minimum
+          description: >
+            Pas minimum garanti sur un tout petit cran lent (en %). Monter
+            légèrement si la lampe ignore les très faibles pourcentages.
+          default: 5
           selector:
             number:
               min: 1
@@ -173,10 +220,10 @@ blueprint:
         action_on_rotate:
           name: Action supplémentaire à chaque rotation
           description: >
-            Action(s) optionnelle(s) exécutée(s) à CHAQUE cran de molette, en plus
-            du dimming. Typiquement : activer un `input_boolean` de bypass manuel
-            pour empêcher un capteur de mouvement de reprendre la main pendant
-            qu'on ajuste la lumière. Laisser vide pour ne rien faire de plus.
+            Action(s) optionnelle(s) exécutée(s) à CHAQUE cran de molette, en
+            plus du dimming. Typiquement : activer un `input_boolean` de bypass
+            manuel pour empêcher un capteur de mouvement de reprendre la main
+            pendant qu'on ajuste la lumière. Laisser vide pour ne rien faire.
           default: []
           selector:
             action:
@@ -189,8 +236,8 @@ blueprint:
         button_1_short:
           name: Bouton 1 — Appui court
           description: >
-            Action sur appui court. Par défaut on y met `input_select.select_next`
-            pour basculer la lampe contrôlée par la molette.
+            Action sur appui court. Par défaut on y met
+            `input_select.select_next` pour basculer la lampe contrôlée.
           default: []
           selector:
             action:
@@ -272,48 +319,99 @@ trigger:
     topic: !input z2m_topic
 
 variables:
-  # Inputs accessibles dans les templates
+  # ── Inputs accessibles dans les templates ──────────────────────
   opt_a_name: !input light_option_a_name
   opt_a_entity: !input light_option_a_entity
-  opt_a_max: !input light_option_a_max
   opt_a_min: !input light_option_a_min
+  opt_a_max: !input light_option_a_max
+
   opt_b_name: !input light_option_b_name
-  opt_b_entity: !input light_option_b_entity
-  opt_b_max: !input light_option_b_max
-  opt_b_min: !input light_option_b_min
+  opt_b1_entity: !input light_option_b1_entity
+  opt_b1_min: !input light_option_b1_min
+  opt_b1_max: !input light_option_b1_max
+  opt_b2_entity: !input light_option_b2_entity
+  opt_b2_min: !input light_option_b2_min
+  opt_b2_max: !input light_option_b2_max
+
   selector_entity: !input light_selector
   normalize: !input step_normalize
-  # Calculs molette
+
+  # ── Lecture du message molette ─────────────────────────────────
   act: "{{ trigger.payload_json.action | default('') }}"
   raw_step: "{{ trigger.payload_json.action_step_size | int(0) }}"
   direction: "{{ 'up' if act == 'brightness_step_up' else 'down' }}"
   selected: "{{ states(selector_entity) }}"
-  light_entity: "{{ opt_a_entity if selected == opt_a_name else opt_b_entity }}"
-  max_pct: "{{ opt_a_max if selected == opt_a_name else opt_b_max }}"
-  min_step: "{{ opt_a_min if selected == opt_a_name else opt_b_min }}"
   norm: "{{ ([raw_step, normalize | int] | min) / (normalize | int) }}"
-  # Courbe CUBIQUE : douce en bas, forte en haut, capée à 100
-  computed_step: >
-    {{ [ [ (norm | float * norm | float * norm | float * max_pct | float) | round(0) | int, 100 ] | min, min_step | int ] | max }}
-  signed_step: "{{ computed_step if direction == 'up' else (computed_step * -1) }}"
+
+  # ── Lampes concernées selon l'option sélectionnée ──────────────
+  active_lights: >
+    {% if selected == opt_a_name %}
+      {{ [{'entity': opt_a_entity, 'min': opt_a_min, 'max': opt_a_max}] }}
+    {% else %}
+      {% set ns = namespace(items=[{'entity': opt_b1_entity, 'min': opt_b1_min, 'max': opt_b1_max}]) %}
+      {% if opt_b2_entity %}
+        {% set ns.items = ns.items + [{'entity': opt_b2_entity, 'min': opt_b2_min, 'max': opt_b2_max}] %}
+      {% endif %}
+      {{ ns.items }}
+    {% endif %}
+
+  # ── Courbe CUBIQUE appliquée PAR LAMPE, avec ses propres bornes ─
+  #    Les lampes unavailable/unknown sont exclues de la liste.
+  targets: >
+    {% set ns = namespace(items=[]) %}
+    {% for l in active_lights %}
+      {% set st = states(l.entity) %}
+      {% if st in ['on', 'off'] %}
+        {% set step = [ [ (((norm | float) ** 3) * (l.max | float)) | round(0) | int, 100 ] | min, l.min | int ] | max %}
+        {% set ns.items = ns.items + [{
+             'entity': l.entity,
+             'step': step,
+             'signed': step if direction == 'up' else (step * -1),
+             'is_off': st == 'off'
+           }] %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.items }}
 
 action:
   - choose:
-      # ── MOLETTE : dimming dynamique ───────────────────────────────
+      # ── MOLETTE : dimming dynamique multi-lampes ─────────────────
       - conditions:
           - condition: template
             value_template: "{{ act in ['brightness_step_up', 'brightness_step_down'] }}"
         sequence:
-          - action: light.turn_on
-            target:
-              entity_id: "{{ light_entity }}"
-            data:
-              brightness_step_pct: "{{ signed_step }}"
-              transition: 0
+          - repeat:
+              for_each: "{{ targets }}"
+              sequence:
+                - choose:
+                    # Éteinte + rotation ↑ → départ ABSOLU depuis 0 %
+                    - conditions:
+                        - condition: template
+                          value_template: "{{ repeat.item.is_off and direction == 'up' }}"
+                      sequence:
+                        - action: light.turn_on
+                          target:
+                            entity_id: "{{ repeat.item.entity }}"
+                          data:
+                            brightness_pct: "{{ repeat.item.step }}"
+                            transition: 0
+                    # Allumée → step RELATIF (comportement d'origine)
+                    - conditions:
+                        - condition: template
+                          value_template: "{{ not repeat.item.is_off }}"
+                      sequence:
+                        - action: light.turn_on
+                          target:
+                            entity_id: "{{ repeat.item.entity }}"
+                          data:
+                            brightness_step_pct: "{{ repeat.item.signed }}"
+                            transition: 0
+                  # Éteinte + rotation ↓ → aucune branche : reste éteinte
+
           - alias: Action supplémentaire optionnelle sur rotation
             sequence: !input action_on_rotate
 
-      # ── BOUTON 1 ──────────────────────────────────────────────────
+      # ── BOUTON 1 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_1_press_release' }}"
@@ -323,7 +421,7 @@ action:
             value_template: "{{ act == 'button_1_hold_release' }}"
         sequence: !input button_1_long
 
-      # ── BOUTON 2 ──────────────────────────────────────────────────
+      # ── BOUTON 2 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_2_press_release' }}"
@@ -333,7 +431,7 @@ action:
             value_template: "{{ act == 'button_2_hold_release' }}"
         sequence: !input button_2_long
 
-      # ── BOUTON 3 ──────────────────────────────────────────────────
+      # ── BOUTON 3 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_3_press_release' }}"
@@ -343,7 +441,7 @@ action:
             value_template: "{{ act == 'button_3_hold_release' }}"
         sequence: !input button_3_long
 
-      # ── BOUTON 4 ──────────────────────────────────────────────────
+      # ── BOUTON 4 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_4_press_release' }}"
