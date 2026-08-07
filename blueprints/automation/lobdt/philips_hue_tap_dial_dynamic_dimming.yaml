@@ -1,8 +1,21 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.0.0  —  07/08/2026
+#  Version : 2.1.0  —  07/08/2026
 #
 #  CHANGELOG
+#  2.1.0 - Elargissement des plages de calibration (selecteurs uniquement,
+#          logique inchangee) :
+#          * "Puissance max" : plancher 50 -> 1, pas 5 -> 1.
+#            Motif : une lampe nettement plus lumineuse que sa voisine peut
+#            demander un max tres bas (mesure terrain : ratio x7 entre une
+#            KAJPLATS 1521lm et une Hue -> max calcule a 19, impossible a
+#            saisir avec l'ancien plancher a 50).
+#          * "Pas minimum" : plancher 1 -> 0.5, pas 1 -> 0.5.
+#            Motif : le pas minimum s'applique meme sur la rotation la plus
+#            douce ; sur une lampe puissante, un plancher a 1 % produit deja
+#            un saut visuel important.
+#          Applique aux trois emplacements (A, B1, B2) et pas seulement a B2,
+#          pour ne pas reproduire la limite ailleurs.
 #  2.0.0 - Support multi-lampes sur l'option B : jusqu'a 2 lampes, chacune
 #          avec son propre couple min/max (utile quand les flux lumineux
 #          different). Bonus : envoi individuel par lampe, ce qui evite la
@@ -15,20 +28,25 @@
 #        - Robustesse : les lampes unavailable/unknown sont ignorees au lieu
 #          d'etre traitees comme eteintes.
 #  1.0.0 - Version initiale : dimming cubique, 2 options mono-lampe.
+#
+#  NOTE Adaptive Lighting : si AL pilote une lampe controlee ici, activer
+#  "adapt_only_on_bare_turn_on" sur l'instance AL correspondante. Sinon AL
+#  reecrit la luminosite juste apres chaque commande de la molette, meme
+#  quand "intercept" est desactive.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.0.0
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.1.0
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.0.0**
+    **Version 2.1.0**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
     Zigbee2MQTT, avec un **dimming dynamique à courbe cubique** : tourner
-    doucement la molette ajuste finement la luminosité (≈6 %), un gros coup
-    rapide l'envoie quasiment à fond (≈90-100 %).
+    doucement la molette ajuste finement la luminosité, un gros coup rapide
+    l'envoie quasiment à fond.
 
-    ## ✨ Nouveautés v2.0.0
+    ## ✨ Fonctions clés
     - **Multi-lampes** : l'option B pilote jusqu'à 2 lampes, chacune avec son
       propre couple min/max — indispensable quand les lampes du groupe n'ont
       pas le même flux lumineux.
@@ -38,13 +56,23 @@ blueprint:
     ## 🧠 Stratégie de dimming
     - Lampe **allumée** → `brightness_step_pct` **relatif** : c'est la lampe
       qui calcule, donc aucun aller-retour d'état. Pas de latence, pas de
-      saturation Zigbee en rotation rapide. C'est le comportement d'origine,
-      volontairement conservé.
+      saturation Zigbee en rotation rapide.
     - Lampe **éteinte** + rotation ↑ → `brightness_pct` **absolu** pour ce seul
-      premier cran, garantissant un départ depuis 0. Aucun risque de latence
-      ici : par définition il n'y a pas d'état antérieur à lire.
+      premier cran, garantissant un départ depuis 0.
     - Lampe **éteinte** + rotation ↓ → aucune action, elle reste éteinte.
     - Lampe **indisponible** → ignorée.
+
+    ## 📐 Calibrer deux lampes de puissances différentes
+    Allumer les deux lampes et chercher le pourcentage de chacune qui donne le
+    même rendu visuel. Le rapport obtenu est le facteur à appliquer.
+    Exemple mesuré : 7 % sur une Hue ≈ 1 % sur une KAJPLATS 1521 lm → facteur 7,
+    donc `max` de la KAJPLATS = 130 / 7 ≈ 19, et son `min` au plus bas possible.
+
+    ## ⚠️ Adaptive Lighting
+    Si Adaptive Lighting pilote une des lampes, activer
+    **`adapt_only_on_bare_turn_on`** sur l'instance AL concernée. Sans ça, AL
+    réécrit la luminosité juste après chaque commande de la molette — et ce,
+    même si `intercept` est désactivé (ce sont deux mécanismes distincts).
 
     ## 📋 Prérequis
     - Philips Hue Tap Dial Switch (RDM002) appairé dans **Zigbee2MQTT**
@@ -107,24 +135,28 @@ blueprint:
           description: >
             Amplitude maximale du dimming pour cette lampe (plus haut = plus
             sensible sur les gros coups). 110 = un gros coup atteint ~100 %.
-            Baisser pour une lampe qu'on veut garder plus douce.
+            Descendre fortement pour une lampe beaucoup plus lumineuse que les
+            autres (voir "Calibrer deux lampes" dans la description).
           default: 110
           selector:
             number:
-              min: 50
+              min: 1
               max: 200
-              step: 5
+              step: 1
               mode: slider
 
         light_option_a_min:
           name: Option A — Pas minimum
-          description: Pas minimum garanti sur un tout petit cran lent (en %).
+          description: >
+            Pas minimum garanti sur un tout petit cran lent (en %). S'applique
+            même sur la rotation la plus douce : baisser au maximum sur une
+            lampe puissante, sinon le moindre geste produit un saut visible.
           default: 3
           selector:
             number:
-              min: 1
+              min: 0.5
               max: 10
-              step: 1
+              step: 0.5
               mode: slider
 
         light_option_b_name:
@@ -145,13 +177,14 @@ blueprint:
         light_option_b1_max:
           name: Option B — Lampe 1 — Puissance max de la courbe
           description: >
-            Amplitude maximale du dimming pour cette lampe.
+            Amplitude maximale du dimming pour cette lampe. Sert de référence
+            pour calibrer la lampe 2 (voir description du blueprint).
           default: 130
           selector:
             number:
-              min: 50
+              min: 1
               max: 200
-              step: 5
+              step: 1
               mode: slider
 
         light_option_b1_min:
@@ -160,9 +193,9 @@ blueprint:
           default: 2
           selector:
             number:
-              min: 1
+              min: 0.5
               max: 10
-              step: 1
+              step: 0.5
               mode: slider
 
         light_option_b2_entity:
@@ -179,28 +212,28 @@ blueprint:
         light_option_b2_max:
           name: Option B — Lampe 2 — Puissance max de la courbe
           description: >
-            À calibrer selon le flux réel de cette lampe. Une lampe PLUS
-            puissante que sa voisine se règle avec un max plus BAS pour rester
-            visuellement équilibrée. Valeur de départ prudente : 90.
-          default: 90
+            À calibrer par rapport à la lampe 1. Si cette lampe est N fois plus
+            lumineuse, diviser le max de la lampe 1 par N.
+            Exemple : lampe 1 à 130, rapport mesuré ×7 → mettre ≈ 19.
+          default: 19
           selector:
             number:
-              min: 50
+              min: 1
               max: 200
-              step: 5
+              step: 1
               mode: slider
 
         light_option_b2_min:
           name: Option B — Lampe 2 — Pas minimum
           description: >
-            Pas minimum garanti sur un tout petit cran lent (en %). Monter
-            légèrement si la lampe ignore les très faibles pourcentages.
-          default: 5
+            Pas minimum garanti sur un tout petit cran lent (en %). Sur une
+            lampe nettement plus lumineuse que la lampe 1, viser le minimum.
+          default: 0.5
           selector:
             number:
-              min: 1
+              min: 0.5
               max: 10
-              step: 1
+              step: 0.5
               mode: slider
 
         step_normalize:
@@ -357,12 +390,13 @@ variables:
 
   # ── Courbe CUBIQUE appliquée PAR LAMPE, avec ses propres bornes ─
   #    Les lampes unavailable/unknown sont exclues de la liste.
+  #    Le step reste en float pour supporter les pas < 1 %.
   targets: >
     {% set ns = namespace(items=[]) %}
     {% for l in active_lights %}
       {% set st = states(l.entity) %}
       {% if st in ['on', 'off'] %}
-        {% set step = [ [ (((norm | float) ** 3) * (l.max | float)) | round(0) | int, 100 ] | min, l.min | int ] | max %}
+        {% set step = [ [ (((norm | float) ** 3) * (l.max | float)) | round(1), 100 ] | min, l.min | float ] | max %}
         {% set ns.items = ns.items + [{
              'entity': l.entity,
              'step': step,
