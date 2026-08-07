@@ -1,32 +1,23 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.1.0  —  07/08/2026
+#  Version : 2.2.0  —  07/08/2026
 #
 #  CHANGELOG
-#  2.1.0 - Elargissement des plages de calibration (selecteurs uniquement,
-#          logique inchangee) :
-#          * "Puissance max" : plancher 50 -> 1, pas 5 -> 1.
-#            Motif : une lampe nettement plus lumineuse que sa voisine peut
-#            demander un max tres bas (mesure terrain : ratio x7 entre une
-#            KAJPLATS 1521lm et une Hue -> max calcule a 19, impossible a
-#            saisir avec l'ancien plancher a 50).
-#          * "Pas minimum" : plancher 1 -> 0.5, pas 1 -> 0.5.
-#            Motif : le pas minimum s'applique meme sur la rotation la plus
-#            douce ; sur une lampe puissante, un plancher a 1 % produit deja
-#            un saut visuel important.
-#          Applique aux trois emplacements (A, B1, B2) et pas seulement a B2,
-#          pour ne pas reproduire la limite ailleurs.
-#  2.0.0 - Support multi-lampes sur l'option B : jusqu'a 2 lampes, chacune
-#          avec son propre couple min/max (utile quand les flux lumineux
-#          different). Bonus : envoi individuel par lampe, ce qui evite la
-#          limite de debit des groupes Zigbee (~1 commande/seconde).
-#        - Fix : une lampe eteinte demarre desormais a 0 % au premier cran.
-#          Avant, brightness_step_pct s'appliquait sur la derniere luminosite
-#          memorisee par la lampe, la rallumant a un niveau imprevisible.
-#          Strategie hybride : absolu au premier cran depuis l'extinction,
-#          relatif ensuite (voir section "Strategie de dimming").
-#        - Robustesse : les lampes unavailable/unknown sont ignorees au lieu
-#          d'etre traitees comme eteintes.
+#  2.2.0 - Remplacement de min/max independants pour la Lampe 2 par un
+#          UNIQUE coefficient de ratio par rapport a la Lampe 1 (reference).
+#          Motif : calibrer min et max separement sur la Lampe 2 ne garantit
+#          pas un ratio constant sur toute la course de la molette (mesure
+#          terrain : max correctement calibre a x6.8, mais min derive a x4).
+#          Avec un coefficient unique, le ratio mesure (ex: x7) s'applique
+#          identiquement du plus petit cran au plus gros, sans risque de
+#          derive entre les deux bouts de la courbe.
+#          Limite physique assumee : si le pas derive tombe sous la
+#          resolution de la lampe (~0.4 %), elle peut ne pas bouger sur un
+#          micro-geste. Comportement honnete, pas un defaut du blueprint.
+#  2.1.0 - Elargissement des plages de calibration min/max (retire en 2.2.0
+#          au profit du coefficient, conserve ici pour historique).
+#  2.0.0 - Support multi-lampes sur l'option B, fix depart a 0%, robustesse
+#          lampes unavailable.
 #  1.0.0 - Version initiale : dimming cubique, 2 options mono-lampe.
 #
 #  NOTE Adaptive Lighting : si AL pilote une lampe controlee ici, activer
@@ -35,49 +26,44 @@
 #  quand "intercept" est desactive.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.1.0
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.2.0
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.1.0**
+    **Version 2.2.0**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
-    Zigbee2MQTT, avec un **dimming dynamique à courbe cubique** : tourner
-    doucement la molette ajuste finement la luminosité, un gros coup rapide
-    l'envoie quasiment à fond.
+    Zigbee2MQTT, avec un **dimming dynamique à courbe cubique**.
 
     ## ✨ Fonctions clés
-    - **Multi-lampes** : l'option B pilote jusqu'à 2 lampes, chacune avec son
-      propre couple min/max — indispensable quand les lampes du groupe n'ont
-      pas le même flux lumineux.
-    - **Départ à 0 %** : une lampe éteinte démarre au premier cran depuis 0,
-      au lieu de se rallumer à sa dernière luminosité mémorisée.
+    - **Multi-lampes** : l'option B pilote 1 ou 2 lampes. La Lampe 1 est la
+      référence (min/max calibrés normalement). La Lampe 2, si présente, suit
+      la Lampe 1 via un **coefficient de ratio unique** — pas de min/max
+      séparés à maintenir cohérents.
+    - **Départ à 0 %** : une lampe éteinte démarre au premier cran depuis 0.
 
     ## 🧠 Stratégie de dimming
-    - Lampe **allumée** → `brightness_step_pct` **relatif** : c'est la lampe
-      qui calcule, donc aucun aller-retour d'état. Pas de latence, pas de
-      saturation Zigbee en rotation rapide.
-    - Lampe **éteinte** + rotation ↑ → `brightness_pct` **absolu** pour ce seul
-      premier cran, garantissant un départ depuis 0.
-    - Lampe **éteinte** + rotation ↓ → aucune action, elle reste éteinte.
+    - Lampe **allumée** → `brightness_step_pct` relatif (pas de latence).
+    - Lampe **éteinte** + rotation ↑ → `brightness_pct` absolu, départ à 0.
+    - Lampe **éteinte** + rotation ↓ → aucune action.
     - Lampe **indisponible** → ignorée.
 
     ## 📐 Calibrer deux lampes de puissances différentes
-    Allumer les deux lampes et chercher le pourcentage de chacune qui donne le
-    même rendu visuel. Le rapport obtenu est le facteur à appliquer.
-    Exemple mesuré : 7 % sur une Hue ≈ 1 % sur une KAJPLATS 1521 lm → facteur 7,
-    donc `max` de la KAJPLATS = 130 / 7 ≈ 19, et son `min` au plus bas possible.
+    Allumer les deux lampes, chercher le pourcentage de chacune qui donne le
+    même rendu visuel, et diviser : X % Lampe 1 = Y % Lampe 2 → coefficient
+    = X / Y. Exemple mesuré : 7 % Armoire ≈ 1 % KAJPLATS → coefficient = 7.
+    Ce seul chiffre remplace le calibrage séparé du min et du max de la
+    Lampe 2 — le ratio reste juste à n'importe quelle vitesse de rotation.
 
     ## ⚠️ Adaptive Lighting
     Si Adaptive Lighting pilote une des lampes, activer
-    **`adapt_only_on_bare_turn_on`** sur l'instance AL concernée. Sans ça, AL
-    réécrit la luminosité juste après chaque commande de la molette — et ce,
-    même si `intercept` est désactivé (ce sont deux mécanismes distincts).
+    **`adapt_only_on_bare_turn_on`** sur l'instance AL concernée — sinon AL
+    réécrit la luminosité juste après chaque commande de la molette, même si
+    `intercept` est désactivé (deux mécanismes distincts).
 
     ## 📋 Prérequis
     - Philips Hue Tap Dial Switch (RDM002) appairé dans **Zigbee2MQTT**
-    - Un helper `input_select` à 2 options, dont les noms correspondent
-      exactement aux champs "Nom dans l'input_select" ci-dessous
+    - Un helper `input_select` à 2 options
     - Home Assistant 2024.10.0 ou plus récent
   domain: automation
   homeassistant:
@@ -85,7 +71,6 @@ blueprint:
   source_url: https://github.com/lobdt/homeassistant-config/blob/main/blueprints/automation/lobdt/philips_hue_tap_dial_dynamic_dimming.yaml
 
   input:
-    # ──────────────────────────────────────────────────────────────
     section_mqtt:
       name: 1️⃣ Connexion Zigbee2MQTT
       icon: mdi:zigbee
@@ -93,13 +78,10 @@ blueprint:
         z2m_topic:
           name: Topic MQTT de la télécommande
           description: >
-            Topic Z2M complet de la télécommande, généralement
-            `zigbee2mqtt/<Nom de la télécommande>`.
-            Exemple : `zigbee2mqtt/Chambre-Telecommande-Porte`
+            Topic Z2M complet, généralement `zigbee2mqtt/<Nom de la télécommande>`.
           selector:
             text:
 
-    # ──────────────────────────────────────────────────────────────
     section_dimming:
       name: 2️⃣ Molette — Dimming dynamique
       icon: mdi:knob
@@ -107,9 +89,8 @@ blueprint:
         light_selector:
           name: Sélecteur de lampe (input_select)
           description: >
-            Helper `input_select` à 2 options qui détermine ce que la molette
-            contrôle. Les noms des 2 options doivent correspondre exactement
-            aux valeurs saisies plus bas (Option A / Option B).
+            Helper `input_select` à 2 options. Les noms doivent correspondre
+            EXACTEMENT aux valeurs saisies ci-dessous.
           selector:
             entity:
               filter:
@@ -117,26 +98,17 @@ blueprint:
 
         light_option_a_name:
           name: Option A — Nom dans l'input_select
-          description: Le nom EXACT de la 1ʳᵉ option (sensible à la casse).
           default: "Chambre-Plafond"
           selector:
             text:
-
         light_option_a_entity:
           name: Option A — Lampe contrôlée
-          description: La lampe à piloter quand l'option A est sélectionnée.
           selector:
             entity:
               filter:
                 - domain: light
-
         light_option_a_max:
           name: Option A — Puissance max de la courbe
-          description: >
-            Amplitude maximale du dimming pour cette lampe (plus haut = plus
-            sensible sur les gros coups). 110 = un gros coup atteint ~100 %.
-            Descendre fortement pour une lampe beaucoup plus lumineuse que les
-            autres (voir "Calibrer deux lampes" dans la description).
           default: 110
           selector:
             number:
@@ -144,13 +116,8 @@ blueprint:
               max: 200
               step: 1
               mode: slider
-
         light_option_a_min:
           name: Option A — Pas minimum
-          description: >
-            Pas minimum garanti sur un tout petit cran lent (en %). S'applique
-            même sur la rotation la plus douce : baisser au maximum sur une
-            lampe puissante, sinon le moindre geste produit un saut visible.
           default: 3
           selector:
             number:
@@ -161,24 +128,21 @@ blueprint:
 
         light_option_b_name:
           name: Option B — Nom dans l'input_select
-          description: Le nom EXACT de la 2ᵉ option (sensible à la casse).
           default: "Chambre-Ambiance"
           selector:
             text:
 
         light_option_b1_entity:
-          name: Option B — Lampe 1 (obligatoire)
-          description: Première lampe pilotée quand l'option B est sélectionnée.
+          name: Option B — Lampe 1 (référence, obligatoire)
+          description: >
+            Lampe de référence. Son min/max définit la courbe ; la Lampe 2
+            (si présente) la suit via un coefficient, voir ci-dessous.
           selector:
             entity:
               filter:
                 - domain: light
-
         light_option_b1_max:
           name: Option B — Lampe 1 — Puissance max de la courbe
-          description: >
-            Amplitude maximale du dimming pour cette lampe. Sert de référence
-            pour calibrer la lampe 2 (voir description du blueprint).
           default: 130
           selector:
             number:
@@ -186,10 +150,8 @@ blueprint:
               max: 200
               step: 1
               mode: slider
-
         light_option_b1_min:
           name: Option B — Lampe 1 — Pas minimum
-          description: Pas minimum garanti sur un tout petit cran lent (en %).
           default: 2
           selector:
             number:
@@ -201,47 +163,32 @@ blueprint:
         light_option_b2_entity:
           name: Option B — Lampe 2 (optionnelle)
           description: >
-            Deuxième lampe du slot B, si le groupe en contient plusieurs.
-            Laisser vide si une seule lampe suffit.
+            Deuxième lampe du slot B. Laisser vide si une seule lampe suffit.
+            Son pas est dérivé de celui de la Lampe 1 via le coefficient
+            ci-dessous — pas de min/max séparés à régler.
           default: []
           selector:
             entity:
               filter:
                 - domain: light
-
-        light_option_b2_max:
-          name: Option B — Lampe 2 — Puissance max de la courbe
+        light_option_b2_ratio:
+          name: Option B — Lampe 2 — Coefficient par rapport à la Lampe 1
           description: >
-            À calibrer par rapport à la lampe 1. Si cette lampe est N fois plus
-            lumineuse, diviser le max de la lampe 1 par N.
-            Exemple : lampe 1 à 130, rapport mesuré ×7 → mettre ≈ 19.
-          default: 19
+            Combien de fois la Lampe 2 est plus lumineuse que la Lampe 1, à
+            % égal. Mesure : allumer les 2, ajuster jusqu'à rendu visuel
+            équivalent, diviser % Lampe 1 par % Lampe 2. Exemple : 7 % / 1 %
+            → coefficient 7. Le pas envoyé à la Lampe 2 = pas de la Lampe 1
+            divisé par ce nombre, à chaque rotation.
+          default: 7
           selector:
             number:
-              min: 1
-              max: 200
-              step: 1
-              mode: slider
-
-        light_option_b2_min:
-          name: Option B — Lampe 2 — Pas minimum
-          description: >
-            Pas minimum garanti sur un tout petit cran lent (en %). Sur une
-            lampe nettement plus lumineuse que la lampe 1, viser le minimum.
-          default: 0.5
-          selector:
-            number:
-              min: 0.5
-              max: 10
-              step: 0.5
+              min: 0.1
+              max: 50
+              step: 0.1
               mode: slider
 
         step_normalize:
           name: Normalisation du step_size
-          description: >
-            Valeur de `action_step_size` considérée comme « gros coup » maximal.
-            La molette Hue rapporte généralement jusqu'à ~100-150 par message.
-            100 est un bon défaut. Baisser = plus sensible globalement.
           default: 100
           selector:
             number:
@@ -252,31 +199,21 @@ blueprint:
 
         action_on_rotate:
           name: Action supplémentaire à chaque rotation
-          description: >
-            Action(s) optionnelle(s) exécutée(s) à CHAQUE cran de molette, en
-            plus du dimming. Typiquement : activer un `input_boolean` de bypass
-            manuel pour empêcher un capteur de mouvement de reprendre la main
-            pendant qu'on ajuste la lumière. Laisser vide pour ne rien faire.
           default: []
           selector:
             action:
 
-    # ──────────────────────────────────────────────────────────────
     section_button_1:
       name: 3️⃣ Bouton 1
       icon: mdi:numeric-1-circle-outline
       input:
         button_1_short:
           name: Bouton 1 — Appui court
-          description: >
-            Action sur appui court. Par défaut on y met
-            `input_select.select_next` pour basculer la lampe contrôlée.
           default: []
           selector:
             action:
         button_1_long:
           name: Bouton 1 — Appui long
-          description: Action sur appui long.
           default: []
           selector:
             action:
@@ -286,12 +223,10 @@ blueprint:
       icon: mdi:numeric-2-circle-outline
       input:
         button_2_short:
-          name: Bouton 2 — Appui court
           default: []
           selector:
             action:
         button_2_long:
-          name: Bouton 2 — Appui long
           default: []
           selector:
             action:
@@ -301,12 +236,10 @@ blueprint:
       icon: mdi:numeric-3-circle-outline
       input:
         button_3_short:
-          name: Bouton 3 — Appui court
           default: []
           selector:
             action:
         button_3_long:
-          name: Bouton 3 — Appui long
           default: []
           selector:
             action:
@@ -316,17 +249,14 @@ blueprint:
       icon: mdi:numeric-4-circle-outline
       input:
         button_4_short:
-          name: Bouton 4 — Appui court
           default: []
           selector:
             action:
         button_4_long:
-          name: Bouton 4 — Appui long
           default: []
           selector:
             action:
 
-    # ──────────────────────────────────────────────────────────────
     section_context:
       name: 7️⃣ Avancé — Suivi de contexte
       icon: mdi:cog
@@ -334,10 +264,6 @@ blueprint:
       input:
         last_pressed:
           name: Helper de suivi (input_text)
-          description: >
-            Helper `input_text` optionnel pour suivre le dernier bouton pressé.
-            Laissé tel quel par ce blueprint pour compatibilité ; les boutons
-            peuvent le remettre à "1" via leurs propres actions si besoin.
           default: []
           selector:
             entity:
@@ -352,7 +278,6 @@ trigger:
     topic: !input z2m_topic
 
 variables:
-  # ── Inputs accessibles dans les templates ──────────────────────
   opt_a_name: !input light_option_a_name
   opt_a_entity: !input light_option_a_entity
   opt_a_min: !input light_option_a_min
@@ -363,53 +288,53 @@ variables:
   opt_b1_min: !input light_option_b1_min
   opt_b1_max: !input light_option_b1_max
   opt_b2_entity: !input light_option_b2_entity
-  opt_b2_min: !input light_option_b2_min
-  opt_b2_max: !input light_option_b2_max
+  opt_b2_ratio: !input light_option_b2_ratio
 
   selector_entity: !input light_selector
   normalize: !input step_normalize
 
-  # ── Lecture du message molette ─────────────────────────────────
   act: "{{ trigger.payload_json.action | default('') }}"
   raw_step: "{{ trigger.payload_json.action_step_size | int(0) }}"
   direction: "{{ 'up' if act == 'brightness_step_up' else 'down' }}"
   selected: "{{ states(selector_entity) }}"
   norm: "{{ ([raw_step, normalize | int] | min) / (normalize | int) }}"
 
-  # ── Lampes concernées selon l'option sélectionnée ──────────────
-  active_lights: >
-    {% if selected == opt_a_name %}
-      {{ [{'entity': opt_a_entity, 'min': opt_a_min, 'max': opt_a_max}] }}
-    {% else %}
-      {% set ns = namespace(items=[{'entity': opt_b1_entity, 'min': opt_b1_min, 'max': opt_b1_max}]) %}
-      {% if opt_b2_entity %}
-        {% set ns.items = ns.items + [{'entity': opt_b2_entity, 'min': opt_b2_min, 'max': opt_b2_max}] %}
-      {% endif %}
-      {{ ns.items }}
-    {% endif %}
+  # ── Lampe de référence : Option A seule, ou Lampe 1 si Option B ────
+  ref_entity: "{{ opt_a_entity if selected == opt_a_name else opt_b1_entity }}"
+  ref_min: "{{ opt_a_min if selected == opt_a_name else opt_b1_min }}"
+  ref_max: "{{ opt_a_max if selected == opt_a_name else opt_b1_max }}"
+  ref_step: "{{ [ [ (((norm | float) ** 3) * (ref_max | float)) | round(2), 100 ] | min, ref_min | float ] | max }}"
 
-  # ── Courbe CUBIQUE appliquée PAR LAMPE, avec ses propres bornes ─
-  #    Les lampes unavailable/unknown sont exclues de la liste.
-  #    Le step reste en float pour supporter les pas < 1 %.
+  # ── Construction de la liste des lampes à piloter ───────────────────
+  #    Lampe 2 dérivée du pas de référence via le coefficient (pas de
+  #    min/max séparés). Lampes unavailable/unknown exclues.
   targets: >
     {% set ns = namespace(items=[]) %}
-    {% for l in active_lights %}
-      {% set st = states(l.entity) %}
-      {% if st in ['on', 'off'] %}
-        {% set step = [ [ (((norm | float) ** 3) * (l.max | float)) | round(1), 100 ] | min, l.min | float ] | max %}
+    {% set st_ref = states(ref_entity) %}
+    {% if st_ref in ['on', 'off'] %}
+      {% set ns.items = ns.items + [{
+           'entity': ref_entity,
+           'step': ref_step,
+           'signed': ref_step if direction == 'up' else (ref_step * -1),
+           'is_off': st_ref == 'off'
+         }] %}
+    {% endif %}
+    {% if selected != opt_a_name and opt_b2_entity %}
+      {% set st2 = states(opt_b2_entity) %}
+      {% if st2 in ['on', 'off'] %}
+        {% set step2 = (ref_step / (opt_b2_ratio | float)) | round(2) %}
         {% set ns.items = ns.items + [{
-             'entity': l.entity,
-             'step': step,
-             'signed': step if direction == 'up' else (step * -1),
-             'is_off': st == 'off'
+             'entity': opt_b2_entity,
+             'step': step2,
+             'signed': step2 if direction == 'up' else (step2 * -1),
+             'is_off': st2 == 'off'
            }] %}
       {% endif %}
-    {% endfor %}
+    {% endif %}
     {{ ns.items }}
 
 action:
   - choose:
-      # ── MOLETTE : dimming dynamique multi-lampes ─────────────────
       - conditions:
           - condition: template
             value_template: "{{ act in ['brightness_step_up', 'brightness_step_down'] }}"
@@ -418,7 +343,6 @@ action:
               for_each: "{{ targets }}"
               sequence:
                 - choose:
-                    # Éteinte + rotation ↑ → départ ABSOLU depuis 0 %
                     - conditions:
                         - condition: template
                           value_template: "{{ repeat.item.is_off and direction == 'up' }}"
@@ -429,7 +353,6 @@ action:
                           data:
                             brightness_pct: "{{ repeat.item.step }}"
                             transition: 0
-                    # Allumée → step RELATIF (comportement d'origine)
                     - conditions:
                         - condition: template
                           value_template: "{{ not repeat.item.is_off }}"
@@ -440,12 +363,10 @@ action:
                           data:
                             brightness_step_pct: "{{ repeat.item.signed }}"
                             transition: 0
-                  # Éteinte + rotation ↓ → aucune branche : reste éteinte
 
           - alias: Action supplémentaire optionnelle sur rotation
             sequence: !input action_on_rotate
 
-      # ── BOUTON 1 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_1_press_release' }}"
@@ -454,8 +375,6 @@ action:
           - condition: template
             value_template: "{{ act == 'button_1_hold_release' }}"
         sequence: !input button_1_long
-
-      # ── BOUTON 2 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_2_press_release' }}"
@@ -464,8 +383,6 @@ action:
           - condition: template
             value_template: "{{ act == 'button_2_hold_release' }}"
         sequence: !input button_2_long
-
-      # ── BOUTON 3 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_3_press_release' }}"
@@ -474,8 +391,6 @@ action:
           - condition: template
             value_template: "{{ act == 'button_3_hold_release' }}"
         sequence: !input button_3_long
-
-      # ── BOUTON 4 ────────────────────────────────────────────────
       - conditions:
           - condition: template
             value_template: "{{ act == 'button_4_press_release' }}"
