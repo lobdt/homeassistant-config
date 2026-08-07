@@ -11,7 +11,7 @@
 #          (mesure terrain : ratio effectif 2 au lieu de 7) et accumulait
 #          l'erreur cran apres cran.
 #          Desormais : niveau_vise_L1 = niveau_actuel_L1 + pas ; puis
-//          cible_L2 = niveau_vise_L1 / coefficient, envoyee en absolu.
+#          cible_L2 = niveau_vise_L1 / coefficient, envoyee en absolu.
 #          Le ratio est recalcule a chaque rotation depuis l'etat reel, donc
 #          aucune derive cumulative possible, a toutes les vitesses.
 #          Corollaire : le "pas minimum" de la Lampe 2 disparait (elle ne
