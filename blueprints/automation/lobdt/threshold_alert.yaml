@@ -3,29 +3,64 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 4.1**
+    **Version: 5.0**
 
 
-    Envoie une notification répétée tant qu'un capteur dépasse un seuil ou
-    qu'un appareil est dans un état indésirable. Notifie aussi quand le
-    problème est résolu. Détecte aussi si le capteur ne répond plus.
+    Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
+    un seuil ou sont dans un état indésirable. Notifie aussi quand le
+    problème est résolu. Détecte aussi si un capteur ne répond plus.
 
 
     **Cas d'usage typiques :**
-    - Frigo / congélateur trop chaud
-    - Détecteur d'inondation
-    - Capteur CO₂ trop élevé
-    - Porte ouverte trop longtemps
+    - Frigo / congélateur trop chaud (numérique)
+    - Détecteur d'inondation / fuite d'eau (état binaire)
+    - Capteur CO₂ trop élevé (numérique)
+    - Porte ouverte trop longtemps (état binaire)
+
+
+    **⚠️ Une seule politique de destinataires par instance :**
+
+    Le champ "Capteur(s)" accepte plusieurs entités — mais ne regroupez
+    ensemble dans une même instance QUE des capteurs qui doivent notifier
+    EXACTEMENT les mêmes personnes. Un capteur dont l'alerte doit aussi
+    aller à des tiers externes (ex : voisins pour un risque bâtiment) ne
+    doit jamais partager une instance avec un capteur privé — sinon le
+    capteur privé hérite silencieusement des mêmes destinataires externes.
+    En cas de doute, une instance séparée par capteur reste le choix sûr.
 
 
     **Fonctionnement :**
 
-    1. Remplis soit **Entité numérique** soit **Entité état** (pas les deux).
-    2. Le trigger se déclenche quand le seuil/état est atteint pendant le délai de confirmation.
-    3. La notification d'alerte est envoyée, puis répétée à intervalle régulier.
-    4. Quand le problème se résout, une notification de retour à la normale est envoyée.
-    5. Si le capteur ne répond plus (unavailable ou données trop anciennes),
-       une notification dédiée est envoyée.
+    1. Remplis soit **Entité(s) numérique(s)** soit **Entité(s) état**
+       (pas les deux).
+    2. Le trigger se déclenche quand le seuil/état est atteint pendant le
+       délai de confirmation, sur n'importe lequel des capteurs choisis.
+    3. La notification d'alerte est envoyée (avec le nom du capteur
+       déclencheur inclus par défaut), puis répétée à intervalle régulier
+       tant qu'AU MOINS UN des capteurs reste en alerte.
+    4. Quand TOUS les capteurs sont revenus à la normale, une notification
+       de retour à la normale est envoyée.
+    5. Si un capteur ne répond plus (unavailable ou données trop
+       anciennes), une notification dédiée est envoyée.
+
+
+    **Changelog v5.0 :**
+    - Support de plusieurs capteurs par instance (`multiple: true` sur les
+      champs Entité numérique / Entité état / Notify), avec toute la
+      logique de répétition et de watchdog adaptée en conséquence.
+    - Les destinataires (`notify_entity`) se choisissent maintenant en
+      liste directe, visible dans la config de l'automatisation — plus
+      besoin de créer un helper "groupe" séparé pour notifier plusieurs
+      personnes/canaux.
+    - Message d'alerte/résolution par défaut auto-adapté au nom du capteur
+      déclencheur (`{{ trigger.to_state.name }}`) au lieu d'un texte figé.
+    - Nouvel input **Alerte critique** (bypass du mode silencieux iOS) —
+      pertinent pour une fuite active, pas pour un frigo un peu chaud.
+    - Fréquence de vérification du watchdog désormais configurable
+      (auparavant fixée en dur à 1x/heure).
+    - Bouton "OK" (dismiss) ajouté sur toutes les notifications.
+    - Description reformulée pour refléter l'usage aussi bien numérique
+      que binaire (initialement pensé pour du seuil de température).
 
     **Changelog v4.1 :** correction d'un faux positif — la notification
     "retour à la normale" ne se déclenche plus quand un capteur revient
@@ -44,17 +79,18 @@ blueprint:
       input:
 
         numeric_entity:
-          name: Entité numérique (optionnel)
+          name: Entité(s) numérique(s) (optionnel)
           description: >
-            Capteur numérique à surveiller. L'alerte se déclenche si la valeur
-            dépasse le **Seuil** ci-dessous.
+            Capteur(s) numérique(s) à surveiller. L'alerte se déclenche si
+            la valeur d'AU MOINS UN dépasse le **Seuil** ci-dessous.
 
             Ex: `sensor.cuisine_thermometre_frigo_temperature`
 
-            Laisser vide si tu utilises une entité état.
+            Laisser vide si tu utilises une/des entité(s) état.
           default: []
           selector:
             entity:
+              multiple: true
               domain:
                 - sensor
                 - input_number
@@ -74,15 +110,17 @@ blueprint:
               mode: box
 
         state_entity:
-          name: Entité état (optionnel)
+          name: Entité(s) état (optionnel)
           description: >
-            Entité dont l'état déclenche l'alerte.
-            Ex: `binary_sensor.cuisine_inondation`
+            Entité(s) dont l'état déclenche l'alerte. L'alerte se déclenche
+            si AU MOINS UNE est dans l'état déclencheur.
+            Ex: `binary_sensor.cave_capteur_inondation_fuite`
 
-            Laisser vide si tu utilises une entité numérique.
+            Laisser vide si tu utilises une/des entité(s) numérique(s).
           default: []
           selector:
-            entity: {}
+            entity:
+              multiple: true
 
         alert_state:
           name: État déclencheur
@@ -98,6 +136,7 @@ blueprint:
           description: >
             Attendre ce délai avant d'envoyer la première notification.
             Évite les fausses alertes (ex: ouverture de porte de frigo).
+            Mettre à 0 pour une alerte immédiate (ex: fuite d'eau).
           default:
             minutes: 10
           selector:
@@ -111,14 +150,29 @@ blueprint:
       input:
 
         notify_entity:
-          name: Entité de notification
+          name: Entité(s) de notification
           description: >
-            L'entité notify à utiliser.
-            Ex: `notify.iphones_loic_alina`, `notify.mobile_app_iphone_loic`
-          default: notify.notify
+            Les entités notify à utiliser — visibles ici directement,
+            sans passer par un helper "groupe" séparé.
+            Ex: `notify.notify_loic`, `notify.notify_alina`,
+            `notify.alerte_maison`
+          default: []
           selector:
             entity:
+              multiple: true
               domain: notify
+
+        critical_alert:
+          name: Alerte critique (bypass silencieux iOS)
+          description: >
+            Si activé, ajoute le payload critique iOS (bypass du mode
+            silencieux/Ne pas déranger) sur les notifications d'alerte et
+            de rappel. Pertinent pour un problème actif nécessitant une
+            action immédiate (ex: fuite d'eau) — pas pour un frigo un peu
+            chaud.
+          default: false
+          selector:
+            boolean: {}
 
         alert_title:
           name: Titre de l'alerte
@@ -130,8 +184,10 @@ blueprint:
           name: Message d'alerte
           description: >
             Tu peux utiliser des templates :
-            `{{ states('sensor.xxx') }}` pour la valeur actuelle.
-          default: "Un capteur a dépassé son seuil !"
+            `{{ trigger.to_state.name }}` pour le nom du capteur
+            déclencheur, `{{ states('sensor.xxx') }}` pour une valeur
+            spécifique.
+          default: "🚨 Alerte : {{ trigger.to_state.name }} !"
           selector:
             text:
               multiline: true
@@ -145,7 +201,7 @@ blueprint:
 
         resolved_message:
           name: Message — Retour à la normale (optionnel)
-          default: "Le capteur est revenu à la normale."
+          default: "✔️ {{ trigger.to_state.name }} est revenu à la normale."
           selector:
             text:
               multiline: true
@@ -160,8 +216,9 @@ blueprint:
         repeat_interval:
           name: Intervalle de répétition
           description: >
-            Nouvelle notification envoyée à cet intervalle tant que le problème
-            persiste. Mettre à 0 pour désactiver la répétition.
+            Nouvelle notification envoyée à cet intervalle tant qu'AU
+            MOINS UN capteur reste en alerte. Mettre à 0 pour désactiver
+            la répétition.
           default:
             minutes: 30
           selector:
@@ -177,9 +234,9 @@ blueprint:
         max_age_minutes:
           name: Âge maximum des données (minutes)
           description: >
-            Si le capteur n'envoie plus de données depuis ce nombre de minutes,
-            une notification d'alerte est envoyée. Couvre aussi le cas
-            `unavailable` ou `unknown`.
+            Si un capteur n'envoie plus de données depuis ce nombre de
+            minutes, une notification d'alerte est envoyée. Couvre aussi
+            le cas `unavailable` ou `unknown`.
 
             Mettre à `0` pour désactiver cette surveillance.
 
@@ -193,6 +250,26 @@ blueprint:
               unit_of_measurement: min
               mode: slider
 
+        watchdog_check_frequency:
+          name: Fréquence de vérification périodique
+          description: >
+            À quelle fréquence re-vérifier l'âge des données (en plus de
+            la détection immédiate d'un passage à unavailable/unknown).
+          default: "/60"
+          selector:
+            select:
+              options:
+                - label: Toutes les 5 min
+                  value: "/5"
+                - label: Toutes les 15 min
+                  value: "/15"
+                - label: Toutes les 30 min
+                  value: "/30"
+                - label: Toutes les heures
+                  value: "/60"
+              sort: false
+              multiple: false
+
         watchdog_title:
           name: Titre — Capteur mort
           default: "📡 Capteur hors ligne"
@@ -202,7 +279,7 @@ blueprint:
         watchdog_message:
           name: Message — Capteur mort
           description: >
-            Message envoyé quand le capteur ne répond plus.
+            Message envoyé quand un capteur ne répond plus.
           default: "Un capteur ne répond plus depuis trop longtemps !"
           selector:
             text:
@@ -214,6 +291,7 @@ variables:
   state_entity: !input state_entity
   alert_state: !input alert_state
   notify_entity: !input notify_entity
+  critical_alert: !input critical_alert
   alert_title: !input alert_title
   alert_message: !input alert_message
   resolved_title: !input resolved_title
@@ -222,21 +300,32 @@ variables:
   max_age_minutes: !input max_age_minutes
   watchdog_title: !input watchdog_title
   watchdog_message: !input watchdog_message
-  # Entité surveillée (numérique ou état)
-  watched_entity: >
-    {% if numeric_entity | default([]) | length > 0 %}
-      {{ numeric_entity }}
-    {% else %}
-      {{ state_entity }}
-    {% endif %}
+  # Normalisation : chaque champ peut contenir une string (anciennes
+  # instances, avant le passage a multiple: true) ou une liste (nouvelles
+  # instances / multi-capteurs). On uniformise en liste partout ensuite.
+  numeric_list: >
+    {{ numeric_entity if numeric_entity is sequence and numeric_entity is not string
+       else ([numeric_entity] if numeric_entity else []) }}
+  state_list: >
+    {{ state_entity if state_entity is sequence and state_entity is not string
+       else ([state_entity] if state_entity else []) }}
+  # Entité(s) surveillée(s) (numérique ou état, mutuellement exclusif)
+  watched_entities: >
+    {{ numeric_list if numeric_list | length > 0 else state_list }}
   # Secondes totales de l'intervalle — calculé une fois, utilisé dans while
   repeat_seconds: >
     {{ (repeat_interval.hours | default(0)) * 3600
        + (repeat_interval.minutes | default(0)) * 60
        + (repeat_interval.seconds | default(0)) }}
+  # Payload iOS critique (bypass silencieux) — vide si non active
+  critical_data: >
+    {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}} if critical_alert else {} }}
+  # data.data commun a tous les envois : critique (si actif) + bouton OK
+  notify_data: >
+    {{ dict(critical_data, actions=[{'action': 'DISMISS', 'title': 'OK'}]) }}
 
 trigger:
-  # Trigger numérique — valeur dépasse le seuil
+  # Trigger numérique — une des valeurs dépasse le seuil
   # Si numeric_entity est vide ([]), ce trigger ne se déclenche jamais
   - trigger: numeric_state
     entity_id: !input numeric_entity
@@ -244,7 +333,7 @@ trigger:
     for: !input confirmation_delay
     id: alert_numeric
 
-  # Trigger état — entité passe à l'état déclencheur
+  # Trigger état — une entité passe à l'état déclencheur
   # Si state_entity est vide ([]), ce trigger ne se déclenche jamais
   - trigger: state
     entity_id: !input state_entity
@@ -283,9 +372,9 @@ trigger:
       minutes: 5
     id: watchdog_unavailable_state
 
-  # Trigger watchdog périodique — vérifie l'âge des données toutes les heures
+  # Trigger watchdog périodique — vérifie l'âge des données
   - trigger: time_pattern
-    hours: "/1"
+    minutes: !input watchdog_check_frequency
     id: watchdog_periodic
 
 condition: []
@@ -306,6 +395,7 @@ action:
           data:
             title: "{{ alert_title }}"
             message: "{{ alert_message }}"
+            data: "{{ notify_data }}"
 
         - repeat:
             while:
@@ -313,10 +403,11 @@ action:
                 value_template: "{{ repeat_seconds > 0 }}"
               - condition: template
                 value_template: >
-                  {% if numeric_entity | default([]) | length > 0 %}
-                    {{ states(numeric_entity) | float(0) > numeric_above | float(0) }}
+                  {% if numeric_list | length > 0 %}
+                    {{ numeric_list | map('states') | map('float', -1000000)
+                       | select('gt', numeric_above | float(0)) | list | length > 0 }}
                   {% else %}
-                    {{ states(state_entity) == alert_state }}
+                    {{ state_list | select('is_state', alert_state) | list | length > 0 }}
                   {% endif %}
             sequence:
               - wait_for_trigger:
@@ -330,10 +421,11 @@ action:
                 continue_on_timeout: true
               - condition: template
                 value_template: >
-                  {% if numeric_entity | default([]) | length > 0 %}
-                    {{ states(numeric_entity) | float(0) > numeric_above | float(0) }}
+                  {% if numeric_list | length > 0 %}
+                    {{ numeric_list | map('states') | map('float', -1000000)
+                       | select('gt', numeric_above | float(0)) | list | length > 0 }}
                   {% else %}
-                    {{ states(state_entity) == alert_state }}
+                    {{ state_list | select('is_state', alert_state) | list | length > 0 }}
                   {% endif %}
               - action: notify.send_message
                 target:
@@ -341,11 +433,14 @@ action:
                 data:
                   title: "{{ alert_title }}"
                   message: "{{ alert_message }}"
+                  data: "{{ notify_data }}"
 
     # ── Retour à la normale ───────────────────────────────────────────────
     # v4.1 : garde ajoutée — ignore les faux positifs quand l'état précédent
     # était unavailable/unknown (ex: reconnexion MQTT après reboot HA),
     # au lieu d'une vraie sortie d'alerte.
+    # v5.0 : n'envoie qu'une fois TOUS les capteurs surveillés revenus a la
+    # normale (pas des qu'un seul d'entre eux l'est, s'il y en a plusieurs).
     - conditions:
         - condition: trigger
           id:
@@ -357,6 +452,14 @@ action:
           value_template: >
             {{ trigger.from_state is not none and
                trigger.from_state.state not in ['unavailable', 'unknown', 'none'] }}
+        - condition: template
+          value_template: >
+            {% if numeric_list | length > 0 %}
+              {{ numeric_list | map('states') | map('float', -1000000)
+                 | select('gt', numeric_above | float(0)) | list | length == 0 }}
+            {% else %}
+              {{ state_list | select('is_state', alert_state) | list | length == 0 }}
+            {% endif %}
       sequence:
         - action: notify.send_message
           target:
@@ -364,6 +467,7 @@ action:
           data:
             title: "{{ resolved_title }}"
             message: "{{ resolved_message }}"
+            data: "{{ notify_data }}"
 
     # ── Capteur unavailable/unknown ───────────────────────────────────────
     - conditions:
@@ -380,6 +484,7 @@ action:
           data:
             title: "{{ watchdog_title }}"
             message: "{{ watchdog_message }}"
+            data: "{{ notify_data }}"
 
     # ── Watchdog périodique — données trop anciennes ──────────────────────
     - conditions:
@@ -389,12 +494,13 @@ action:
           value_template: "{{ max_age_minutes > 0 }}"
         - condition: template
           value_template: >
-            {% if watched_entity | length > 0 %}
-              {% set last = states[watched_entity].last_updated %}
-              {{ (now() - last).total_seconds() / 60 > max_age_minutes }}
-            {% else %}
-              false
-            {% endif %}
+            {% set ns = namespace(stale=false) %}
+            {% for e in watched_entities %}
+              {% if (now() - states[e].last_updated).total_seconds() / 60 > max_age_minutes %}
+                {% set ns.stale = true %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.stale }}
       sequence:
         - action: notify.send_message
           target:
@@ -402,5 +508,6 @@ action:
           data:
             title: "{{ watchdog_title }}"
             message: "{{ watchdog_message }}"
+            data: "{{ notify_data }}"
 
 mode: restart
