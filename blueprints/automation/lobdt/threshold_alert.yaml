@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.0**
+    **Version: 5.1**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,19 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.1 :** correction d'un bug critique — `notify.send_message`
+    n'accepte que `title`/`message` dans cette version de Home Assistant ;
+    le champ `data` (payload critique iOS + bouton DISMISS) qu'on y
+    injectait faisait échouer TOUTE notification d'alerte avec l'erreur
+    `extra keys not allowed @ data['data']`. Découvert lors du premier test
+    réel du capteur de fuite (aucune notif reçue). Les notifications
+    repassent en `title`/`message` simple le temps de réintroduire l'alerte
+    critique/bouton via un mécanisme compatible (services legacy par
+    appareil). Impact : toutes les instances (frigo, congélateur, fuite)
+    étaient concernées dès qu'une vraie alerte se déclenchait.
+    L'input **Alerte critique** reste présent mais n'a plus d'effet pour
+    l'instant.
 
     **Changelog v5.0 :**
     - Support de plusieurs capteurs par instance (`multiple: true` sur les
@@ -393,7 +406,6 @@ action:
           data:
             title: "{{ alert_title }}"
             message: "{{ alert_message }}"
-            data: "{{ notify_data }}"
 
         - repeat:
             while:
@@ -431,7 +443,6 @@ action:
                 data:
                   title: "{{ alert_title }}"
                   message: "{{ alert_message }}"
-                  data: "{{ notify_data }}"
 
     # ── Retour à la normale ───────────────────────────────────────────────
     # v4.1 : garde ajoutée — ignore les faux positifs quand l'état précédent
@@ -465,7 +476,6 @@ action:
           data:
             title: "{{ resolved_title }}"
             message: "{{ resolved_message }}"
-            data: "{{ notify_data }}"
 
     # ── Capteur unavailable/unknown ───────────────────────────────────────
     - conditions:
@@ -482,7 +492,6 @@ action:
           data:
             title: "{{ watchdog_title }}"
             message: "{{ watchdog_message }}"
-            data: "{{ notify_data }}"
 
     # ── Watchdog périodique — données trop anciennes ──────────────────────
     - conditions:
@@ -506,6 +515,5 @@ action:
           data:
             title: "{{ watchdog_title }}"
             message: "{{ watchdog_message }}"
-            data: "{{ notify_data }}"
 
 mode: restart
