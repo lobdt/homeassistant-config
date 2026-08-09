@@ -1,8 +1,16 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.6.0  —  07/08/2026
+#  Version : 2.6.1  —  09/08/2026
 #
 #  CHANGELOG
+#  2.6.1 - Fix bug reproductible : ref_current_pct plantait
+#          ("int got invalid input 'None'") quand l'attribut brightness de
+#          ref_entity est absent (lampe eteinte sans brightness stocke).
+#          `| default(0) | int` ne rattrape pas un None reel (default ne
+#          reagit qu'a Undefined) ; remplace par `| int(0)` qui gere le
+#          None directement. Touchait les 3 instances (Loic/Alina/Porte)
+#          a chaque pression sur une lampe hors ligne/eteinte sans etat de
+#          brightness memorise.
 #  2.6.0 - Le saut net a 100% introduit en 2.5.0 est remplace par une
 #          transition progressive, dont la taille est DERIVEE AUTOMATIQUEMENT
 #          du multiplicateur (aucun nouveau champ UI) :
@@ -30,11 +38,11 @@
 #  (intercept=true), peu importe ce que ce blueprint calcule.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.6.0
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.6.1
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.6.0**
+    **Version 2.6.1**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
     Zigbee2MQTT, avec un **dimming dynamique à courbe cubique**.
@@ -330,7 +338,7 @@ variables:
   ref_signed: "{{ ref_step if direction == 'up' else (ref_step * -1) }}"
 
   ref_current_pct: >
-    {{ 0 if ref_off else ((state_attr(ref_entity, 'brightness') | default(0) | int) / 255 * 100) }}
+    {{ 0 if ref_off else ((state_attr(ref_entity, 'brightness') | int(0)) / 255 * 100) }}
 
   ref_target_pct: >
     {{ [ [ (ref_current_pct | float) + (ref_signed | int), 0 ] | max, 100 ] | min }}
