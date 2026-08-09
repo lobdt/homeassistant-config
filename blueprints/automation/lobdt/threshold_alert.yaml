@@ -255,7 +255,7 @@ blueprint:
           description: >
             À quelle fréquence re-vérifier l'âge des données (en plus de
             la détection immédiate d'un passage à unavailable/unknown).
-          default: "/60"
+          default: "/30"
           selector:
             select:
               options:
@@ -265,8 +265,6 @@ blueprint:
                   value: "/15"
                 - label: Toutes les 30 min
                   value: "/30"
-                - label: Toutes les heures
-                  value: "/60"
               sort: false
               multiple: false
 
