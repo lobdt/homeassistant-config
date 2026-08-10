@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.1**
+    **Version: 5.2**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,14 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.2 :** correction du spam watchdog — la vérification
+    périodique (`watchdog_periodic`) notifiait à CHAQUE cycle
+    (`watchdog_check_frequency`) tant que le capteur restait hors ligne, soit
+    jusqu'à 4 notifications/heure. Elle ne notifie désormais qu'une fois par
+    tranche de 24h tant que le problème persiste. Découvert suite à un capteur
+    de fuite resté hors ligne 13h+ d'affilée (comportement normal pour un
+    capteur Matter/Thread "sleepy end device" à pile).
 
     **Changelog v5.1 :** correction d'un bug critique — `notify.send_message`
     n'accepte que `title`/`message` dans cette version de Home Assistant ;
@@ -311,6 +319,9 @@ variables:
   max_age_minutes: !input max_age_minutes
   watchdog_title: !input watchdog_title
   watchdog_message: !input watchdog_message
+  watchdog_check_frequency: !input watchdog_check_frequency
+  # Intervalle réel en minutes derriere le select '/5', '/15', '/30'
+  watchdog_check_minutes: "{{ watchdog_check_frequency | replace('/', '') | int(15) }}"
   # Normalisation : chaque champ peut contenir une string (anciennes
   # instances, avant le passage a multiple: true) ou une liste (nouvelles
   # instances / multi-capteurs). On uniformise en liste partout ensuite.
@@ -501,9 +512,16 @@ action:
           value_template: "{{ max_age_minutes > 0 }}"
         - condition: template
           value_template: >
+            {# Ne notifie qu'UNE fois par tranche de 24h tant que ça reste hors ligne,
+               au lieu de spammer a chaque verification periodique (toutes les
+               watchdog_check_frequency minutes). Des qu'un capteur franchit
+               max_age_minutes, la fenetre [max_age_minutes, max_age_minutes +
+               check_minutes[ notifie une fois, puis se tait jusqu'a la meme
+               fenetre 24h plus tard. #}
             {% set ns = namespace(stale=false) %}
             {% for e in watched_entities %}
-              {% if (now() - states[e].last_updated).total_seconds() / 60 > max_age_minutes %}
+              {% set stale_min = (now() - states[e].last_updated).total_seconds() / 60 %}
+              {% if stale_min > max_age_minutes and (stale_min - max_age_minutes) % 1440 < watchdog_check_minutes %}
                 {% set ns.stale = true %}
               {% endif %}
             {% endfor %}
