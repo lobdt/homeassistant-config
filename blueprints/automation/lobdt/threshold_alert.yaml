@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.3**
+    **Version: 5.4**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,19 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.4 :** réintroduction de l'alerte critique/bouton OK,
+    contournée en v5.1. `notify.send_message` ne pouvant toujours pas
+    transporter de payload critique (vérifié, schéma fixe), 4 nouveaux
+    inputs optionnels (`critical_push_service_1`/`_2` +
+    `critical_push_notify_entity_1`/`_2`) permettent de router jusqu'à 2
+    personnes vers l'ancien service `notify.mobile_app_xxx` (seul chemin
+    qui accepte encore ce payload), en les excluant de l'envoi générique
+    pour éviter un double envoi. Le nom du service reste dans un helper
+    `input_text` référencé par le blueprint — jamais écrit en dur. Ne
+    concerne que les notifications d'alerte/rappel (pas résolu/watchdog,
+    comme documenté depuis v5.0). Si aucun slot n'est configuré,
+    comportement identique à v5.1-5.3 (aucun changement).
 
     **Changelog v5.3 :** plafond du sélecteur "Âge maximum des données"
     remonté de 1440 (24h) à 2880 min (48h) — trop bas pour couvrir le rythme
@@ -197,9 +210,62 @@ blueprint:
             de rappel. Pertinent pour un problème actif nécessitant une
             action immédiate (ex: fuite d'eau) — pas pour un frigo un peu
             chaud.
+
+            ⚠️ Nécessite `critical_push_service_1`/`_2` ci-dessous pour
+            avoir un effet réel — `notify.send_message` (utilisé pour tout
+            le reste) ne supporte pas ce payload, voir note technique
+            plus bas.
           default: false
           selector:
             boolean: {}
+
+        critical_push_service_1:
+          name: Service push critique — personne 1 (optionnel)
+          description: >
+            Pour que l'alerte critique/bouton OK fonctionne réellement (voir
+            ci-dessus), indique ici un helper `input_text` qui contient le
+            nom du service `notify.mobile_app_xxx` de cette personne — ex.
+            `input_text.legacy_notify_loic`. Laisser vide pour ne pas
+            utiliser ce mécanisme pour cette personne.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_text
+
+        critical_push_notify_entity_1:
+          name: Entité normale correspondante — personne 1 (optionnel)
+          description: >
+            L'entité de `notify_entity` ci-dessus que `critical_push_service_1`
+            remplace (évite un double envoi à la même personne). Ex.
+            `notify.notify_loic`.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: notify
+
+        critical_push_service_2:
+          name: Service push critique — personne 2 (optionnel)
+          description: >
+            Comme `critical_push_service_1`, pour une 2e personne. Ex.
+            `input_text.legacy_notify_alina`.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_text
+
+        critical_push_notify_entity_2:
+          name: Entité normale correspondante — personne 2 (optionnel)
+          description: >
+            L'entité de `notify_entity` que `critical_push_service_2`
+            remplace. Ex. `notify.notify_alina`.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: notify
 
         alert_title:
           name: Titre de l'alerte
@@ -350,9 +416,36 @@ variables:
   # Payload iOS critique (bypass silencieux) — vide si non active
   critical_data: >
     {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}} if critical_alert else {} }}
-  # data.data commun a tous les envois : critique (si actif) + bouton OK
+  # data.data commun a tous les envois critiques : critique (si actif) + bouton OK
   notify_data: >
     {{ dict(critical_data, actions=[{'action': 'DISMISS', 'title': 'OK'}]) }}
+
+  # ── Alerte critique — mécanisme de contournement ──────────────────────
+  # notify.send_message n'accepte que title/message (verifie sur cette
+  # instance HA, v5.1). Les 2 emplacements ci-dessous permettent de router
+  # UNE personne a la fois vers le service legacy notify.mobile_app_xxx
+  # (seul chemin qui accepte encore un payload critique + bouton actionnable),
+  # en l'excluant de l'envoi generique pour eviter un double envoi.
+  critical_push_service_1: !input critical_push_service_1
+  critical_push_notify_entity_1: !input critical_push_notify_entity_1
+  critical_push_service_2: !input critical_push_service_2
+  critical_push_notify_entity_2: !input critical_push_notify_entity_2
+  critical_slot_1_active: >
+    {{ critical_alert and (critical_push_service_1 | default([]) | length > 0)
+       and (critical_push_notify_entity_1 | default([]) | length > 0) }}
+  critical_slot_2_active: >
+    {{ critical_alert and (critical_push_service_2 | default([]) | length > 0)
+       and (critical_push_notify_entity_2 | default([]) | length > 0) }}
+  # notify_entity, sans les personnes deja couvertes par le chemin critique
+  # (utilise pour l'alerte/le rappel uniquement — resolu/watchdog gardent
+  # notify_entity tel quel, l'alerte critique ne les concerne pas)
+  notify_entity_generic: >
+    {% set excluded = (
+         [critical_push_notify_entity_1] if critical_slot_1_active else []
+       ) + (
+         [critical_push_notify_entity_2] if critical_slot_2_active else []
+       ) %}
+    {{ notify_entity | reject('in', excluded) | list }}
 
 trigger:
   # Trigger numérique — une des valeurs dépasse le seuil
@@ -421,10 +514,36 @@ action:
       sequence:
         - action: notify.send_message
           target:
-            entity_id: !input notify_entity
+            entity_id: "{{ notify_entity_generic }}"
           data:
             title: "{{ alert_title }}"
             message: "{{ alert_message }}"
+
+        # Chemin critique par personne — voir note technique sur
+        # critical_push_service_1/2 plus haut. Templated service name
+        # deliberement assume ici : notify.send_message ne peut pas
+        # transporter le payload critique, c'est le seul mecanisme HA qui
+        # le peut encore (service legacy par appareil, pas une entite).
+        - if:
+            - condition: template
+              value_template: "{{ critical_slot_1_active }}"
+          then:
+            - action: "notify.{{ states(critical_push_service_1) }}"
+              data:
+                title: "{{ alert_title }}"
+                message: "{{ alert_message }}"
+                data: "{{ notify_data }}"
+              continue_on_error: true
+        - if:
+            - condition: template
+              value_template: "{{ critical_slot_2_active }}"
+          then:
+            - action: "notify.{{ states(critical_push_service_2) }}"
+              data:
+                title: "{{ alert_title }}"
+                message: "{{ alert_message }}"
+                data: "{{ notify_data }}"
+              continue_on_error: true
 
         - repeat:
             while:
@@ -458,10 +577,31 @@ action:
                   {% endif %}
               - action: notify.send_message
                 target:
-                  entity_id: !input notify_entity
+                  entity_id: "{{ notify_entity_generic }}"
                 data:
                   title: "{{ alert_title }}"
                   message: "{{ alert_message }}"
+
+              - if:
+                  - condition: template
+                    value_template: "{{ critical_slot_1_active }}"
+                then:
+                  - action: "notify.{{ states(critical_push_service_1) }}"
+                    data:
+                      title: "{{ alert_title }}"
+                      message: "{{ alert_message }}"
+                      data: "{{ notify_data }}"
+                    continue_on_error: true
+              - if:
+                  - condition: template
+                    value_template: "{{ critical_slot_2_active }}"
+                then:
+                  - action: "notify.{{ states(critical_push_service_2) }}"
+                    data:
+                      title: "{{ alert_title }}"
+                      message: "{{ alert_message }}"
+                      data: "{{ notify_data }}"
+                    continue_on_error: true
 
     # ── Retour à la normale ───────────────────────────────────────────────
     # v4.1 : garde ajoutée — ignore les faux positifs quand l'état précédent
