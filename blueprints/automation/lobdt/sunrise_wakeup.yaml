@@ -3,6 +3,8 @@ blueprint:
   description: >
     # 🌅 Simulateur d'Aube — Réveil Progressif
 
+    **Version 1.1**
+
 
     Monte progressivement la luminosité et la température de couleur pour simuler
     un lever de soleil naturel. Scientifiquement calibré : rouge-orangé chaud →
@@ -14,9 +16,17 @@ blueprint:
     - **Heure modifiable** au quotidien depuis un `input_datetime`
     - **Interrupteur on/off** via `input_boolean` (exposable dans HomeKit)
     - **Courbe non-linéaire** : lente au début, s'accélère (comme un vrai soleil)
-    - **Adaptive Lighting** : coupe le switch AL principal avant le lever,
-      le réactive à la fin + apply immédiat — un seul champ à renseigner
-    - **Abort intelligent** : si la lumière est éteinte manuellement, s'arrête
+    - **2e lampe dérivée (optionnel)** : pour une lampe au ressenti lumineux
+      très différent de la principale (ex : trop proche/puissante pour suivre
+      le même pourcentage brut), sa luminosité est calculée à partir de celle
+      de la lampe principale — seuil bas, multiplicateur, palier haut
+      configurable. Même principe que le blueprint maison
+      `philips_hue_tap_dial_dynamic_dimming.yaml`, mais implémenté ici de
+      façon autonome (pas de dépendance partagée entre les deux blueprints).
+    - **Adaptive Lighting** : coupe le(s) switch(s) AL avant le lever, le(s)
+      réactive à la fin + apply immédiat — un champ par lampe
+    - **Abort intelligent** : si la lampe principale est éteinte manuellement,
+      s'arrête
     - **Actions pré et post** lever optionnelles
     - **Sélection de jours** de la semaine
 
@@ -33,6 +43,17 @@ blueprint:
     - `input_datetime` (heure seule) pour l'heure de réveil
     - `input_boolean` pour activer/désactiver
     - Lumière avec support luminosité + température de couleur
+
+
+    **Changelog v1.1 :** ajout du support d'une 2e lampe dérivée
+    (`light_entity_2` + seuil bas/multiplicateur/palier haut configurables)
+    pour gérer proprement 2 lampes au ressenti lumineux différent dans la
+    même pièce, avec coordination Adaptive Lighting indépendante pour
+    chacune (`al_switch_2`). Auparavant, seule une lampe unique (ou un
+    groupe, qui applique alors le même % brut à toutes ses lampes membres,
+    sans tenir compte de leurs différences de ressenti) était supportée.
+
+    **Changelog v1.0 :** version initiale.
 
   domain: automation
   homeassistant:
@@ -219,13 +240,78 @@ blueprint:
                   value: sun
 
     # ─────────────────────────────────────────────────────
+    section_second_light:
+      name: 2️⃣bis Deuxième lampe dérivée (optionnel)
+      icon: mdi:lightbulb-multiple
+      collapsed: true
+      input:
+        light_entity_2:
+          name: Deuxième lampe (optionnel)
+          description: >
+            Une 2e lampe dont la luminosité est calculée à partir de celle de
+            la lampe principale, plutôt que de recevoir le même pourcentage
+            brut — utile quand les 2 lampes n'ont pas le même ressenti
+            lumineux pour un même %.
+
+            Laisser vide pour ne piloter qu'une seule lampe.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: light
+
+        light_entity_2_low_threshold:
+          name: Seuil bas (%)
+          description: >
+            Tant que la lampe principale reste sous ce %, la 2e lampe reste
+            éteinte. Évite qu'une lampe puissante/proche s'allume trop tôt
+            dans le lever.
+          default: 16
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: box
+
+        light_entity_2_multiplier:
+          name: Multiplicateur
+          description: >
+            Au-dessus du seuil bas, la 2e lampe suit `lampe 1 × ce
+            multiplicateur`, jusqu'au palier haut ci-dessous où elle
+            interpole ensuite linéairement.
+          default: 0.3
+          selector:
+            number:
+              min: 0.05
+              max: 2
+              step: 0.05
+              mode: box
+
+        light_entity_2_max_brightness:
+          name: Palier haut (%)
+          description: >
+            Luminosité maximale de la 2e lampe, atteinte quand la lampe
+            principale arrive à 100%. Mets la valeur qui correspond au
+            plafond confortable de cette lampe (pas forcément 100%).
+          default: 100
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: box
+
+    # ─────────────────────────────────────────────────────
     section_adaptive:
       name: 4️⃣ Adaptive Lighting (optionnel)
       icon: mdi:theme-light-dark
       collapsed: true
       input:
         al_switch:
-          name: Switch Adaptive Lighting de la lampe
+          name: Switch Adaptive Lighting de la lampe principale
           description: >
             Le switch principal AL de ta lampe cible, ex :
             `switch.adaptive_lighting_chambre_armoire`.
@@ -235,6 +321,21 @@ blueprint:
             `adaptive_lighting.apply` pour une reprise immédiate.
 
             Laisser vide si pas d'Adaptive Lighting sur cette lampe.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: switch
+                  integration: adaptive_lighting
+
+        al_switch_2:
+          name: Switch Adaptive Lighting de la 2e lampe (optionnel)
+          description: >
+            Si tu utilises une 2e lampe dérivée (light_entity_2), indique ici
+            son propre switch Adaptive Lighting pour qu'il soit coupé/réactivé
+            en même temps que celui de la lampe principale.
+
+            Laisser vide si pas d'Adaptive Lighting sur cette 2e lampe.
           default: []
           selector:
             entity:
@@ -302,8 +403,15 @@ variables:
   days_of_week: !input days_of_week
   light_entity: !input light_entity
   al_switch: !input al_switch
+  al_switch_2: !input al_switch_2
   bypass_boolean: !input bypass_boolean
   total_steps: "{{ ((duration_min * 60) / step_interval) | int(1) }}"
+  # ── Deuxième lampe dérivée (optionnelle) ──────────────────────────────
+  light_entity_2: !input light_entity_2
+  light_entity_2_low_threshold: !input light_entity_2_low_threshold
+  light_entity_2_multiplier: !input light_entity_2_multiplier
+  light_entity_2_max_brightness: !input light_entity_2_max_brightness
+  has_light_2: "{{ light_entity_2 | default([]) | length > 0 }}"
 
 trigger:
   - platform: time
@@ -320,7 +428,7 @@ condition:
       {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
 
 action:
-  # 1. Couper le switch AL principal — AL ne touche plus la lampe pendant le lever
+  # 1. Couper le(s) switch(s) AL — AL ne touche plus les lampes pendant le lever
   - if:
       - condition: template
         value_template: "{{ al_switch | default([]) | length > 0 }}"
@@ -328,8 +436,21 @@ action:
       - action: switch.turn_off
         target:
           entity_id: !input al_switch
-        alias: Couper AL
+        alias: Couper AL (lampe principale)
         continue_on_error: true
+  - if:
+      - condition: template
+        value_template: "{{ al_switch_2 | default([]) | length > 0 }}"
+    then:
+      - action: switch.turn_off
+        target:
+          entity_id: !input al_switch_2
+        alias: Couper AL (2e lampe)
+        continue_on_error: true
+  - if:
+      - condition: template
+        value_template: "{{ (al_switch | default([]) | length > 0) or (al_switch_2 | default([]) | length > 0) }}"
+    then:
       - delay:
           seconds: 1
         alias: Laisser AL terminer ses opérations en cours avant d'allumer
@@ -358,6 +479,33 @@ action:
       color_temp_kelvin: "{{ start_kelvin }}"
     continue_on_error: true
 
+  # 4bis-a. Allumer la 2e lampe dérivée si configurée et si start_brightness
+  #         dépasse déjà son seuil bas (avec les défauts start=1%/seuil=16%,
+  #         elle reste éteinte au départ — normal, elle rejoint plus tard)
+  - if:
+      - condition: template
+        value_template: "{{ has_light_2 and (start_brightness | float) >= (light_entity_2_low_threshold | float) }}"
+    then:
+      - action: light.turn_on
+        target:
+          entity_id: !input light_entity_2
+        data:
+          brightness_pct: >
+            {% set l1 = start_brightness | float %}
+            {% set mult = light_entity_2_multiplier | float %}
+            {% set ceil = light_entity_2_max_brightness | float %}
+            {% set blend_start = [100 * mult, 100] | min %}
+            {% if l1 >= blend_start %}
+              {% set start_l2 = blend_start * mult %}
+              {% set span = 100 - blend_start %}
+              {% set progress = 0 if span <= 0 else (l1 - blend_start) / span %}
+              {{ (start_l2 + progress * (ceil - start_l2)) | round(0) | int }}
+            {% else %}
+              {{ (l1 * mult) | round(0) | int }}
+            {% endif %}
+          color_temp_kelvin: "{{ start_kelvin }}"
+        continue_on_error: true
+
   # 4bis. Attendre la confirmation Zigbee avant le premier check de la boucle
   #       (plus propre qu'un délai fixe : continue dès que la lampe confirme,
   #       timeout 5s en cas de problème Zigbee)
@@ -379,16 +527,60 @@ action:
           entity_id: !input light_entity
           state: "on"
       sequence:
+        - variables:
+            l1_pct_now: >
+              {{ (start_brightness + (end_brightness - start_brightness) * ((repeat.index / total_steps) ** 1.3)) | int }}
+            l1_kelvin_now: >
+              {{ (start_kelvin + (end_kelvin - start_kelvin) * (1 - ((1 - repeat.index / total_steps) ** 1.5))) | int }}
+
         - action: light.turn_on
           target:
             entity_id: !input light_entity
           data:
-            brightness_pct: >
-              {{ (start_brightness + (end_brightness - start_brightness) * ((repeat.index / total_steps) ** 1.3)) | int }}
-            color_temp_kelvin: >
-              {{ (start_kelvin + (end_kelvin - start_kelvin) * (1 - ((1 - repeat.index / total_steps) ** 1.5))) | int }}
+            brightness_pct: "{{ l1_pct_now }}"
+            color_temp_kelvin: "{{ l1_kelvin_now }}"
             transition: "{{ step_interval }}"
           continue_on_error: true
+
+        # 2e lampe dérivée : éteinte sous le seuil bas, dérivée de l1_pct_now
+        # au-dessus (seuil/multiplicateur/palier haut configurables)
+        - if:
+            - condition: template
+              value_template: "{{ has_light_2 }}"
+          then:
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: "{{ (l1_pct_now | float) < (light_entity_2_low_threshold | float) }}"
+                  sequence:
+                    - action: light.turn_off
+                      target:
+                        entity_id: !input light_entity_2
+                      data:
+                        transition: "{{ step_interval }}"
+                      continue_on_error: true
+              default:
+                - action: light.turn_on
+                  target:
+                    entity_id: !input light_entity_2
+                  data:
+                    brightness_pct: >
+                      {% set l1 = l1_pct_now | float %}
+                      {% set mult = light_entity_2_multiplier | float %}
+                      {% set ceil = light_entity_2_max_brightness | float %}
+                      {% set blend_start = [100 * mult, 100] | min %}
+                      {% if l1 >= blend_start %}
+                        {% set start_l2 = blend_start * mult %}
+                        {% set span = 100 - blend_start %}
+                        {% set progress = 0 if span <= 0 else (l1 - blend_start) / span %}
+                        {{ (start_l2 + progress * (ceil - start_l2)) | round(0) | int }}
+                      {% else %}
+                        {{ (l1 * mult) | round(0) | int }}
+                      {% endif %}
+                    color_temp_kelvin: "{{ l1_kelvin_now }}"
+                    transition: "{{ step_interval }}"
+                  continue_on_error: true
+
         - delay:
             seconds: "{{ step_interval }}"
 
@@ -401,7 +593,17 @@ action:
       - action: switch.turn_on
         target:
           entity_id: !input al_switch
-        alias: Réactiver AL
+        alias: Réactiver AL (lampe principale)
+        continue_on_error: true
+
+  - if:
+      - condition: template
+        value_template: "{{ al_switch_2 | default([]) | length > 0 }}"
+    then:
+      - action: switch.turn_on
+        target:
+          entity_id: !input al_switch_2
+        alias: Réactiver AL (2e lampe)
         continue_on_error: true
 
   - if:
@@ -427,6 +629,23 @@ action:
       color_temp_kelvin: "{{ end_kelvin }}"
     continue_on_error: true
 
+  # 7bis. Finaliser la 2e lampe à son palier haut configuré (pas forcément
+  #       100% — c'est justement le but : respecter son plafond confortable)
+  - if:
+      - condition: template
+        value_template: "{{ has_light_2 }}"
+      - condition: state
+        entity_id: !input light_entity_2
+        state: "on"
+    then:
+      - action: light.turn_on
+        target:
+          entity_id: !input light_entity_2
+        data:
+          brightness_pct: "{{ light_entity_2_max_brightness }}"
+          color_temp_kelvin: "{{ end_kelvin }}"
+        continue_on_error: true
+
   # 8. AL reprend immédiatement (sans attendre son prochain cycle naturel)
   - if:
       - condition: template
@@ -437,7 +656,19 @@ action:
           entity_id: !input al_switch
           lights: !input light_entity
           transition: 5
-        alias: Réappliquer AL en douceur (5s)
+        alias: Réappliquer AL en douceur (5s) — lampe principale
+        continue_on_error: true
+
+  - if:
+      - condition: template
+        value_template: "{{ al_switch_2 | default([]) | length > 0 }}"
+    then:
+      - action: adaptive_lighting.apply
+        data:
+          entity_id: !input al_switch_2
+          lights: !input light_entity_2
+          transition: 5
+        alias: Réappliquer AL en douceur (5s) — 2e lampe
         continue_on_error: true
 
   # 9. Actions post-lever
