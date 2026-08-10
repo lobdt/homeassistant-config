@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.2**
+    **Version: 5.3**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,12 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.3 :** plafond du sélecteur "Âge maximum des données"
+    remonté de 1440 (24h) à 2880 min (48h) — trop bas pour couvrir le rythme
+    naturel de certains capteurs Matter/Thread à pile (silences de 18-23h
+    observés en usage réel, hors panne). Passage en champ numérique libre
+    plutôt qu'un slider, plus précis à cette échelle.
 
     **Changelog v5.2 :** correction du spam watchdog — la vérification
     périodique (`watchdog_periodic`) notifiait à CHAQUE cycle
@@ -261,15 +267,17 @@ blueprint:
 
             Mettre à `0` pour désactiver cette surveillance.
 
-            Valeur recommandée : 60 min pour un capteur Zigbee sur pile.
+            Valeur recommandée : 60 min pour un capteur Zigbee sur pile ;
+            jusqu'à 24-48h pour un capteur Matter/Thread "sleepy end device"
+            dont le rythme de report naturel est bien plus espacé.
           default: 0
           selector:
             number:
               min: 0
-              max: 1440
+              max: 2880
               step: 5
               unit_of_measurement: min
-              mode: slider
+              mode: box
 
         watchdog_check_frequency:
           name: Fréquence de vérification périodique
