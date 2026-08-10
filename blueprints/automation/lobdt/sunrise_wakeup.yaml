@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🌅 Simulateur d'Aube — Réveil Progressif
 
-    **Version: 1.2**
+    **Version: 1.3**
 
 
     Monte progressivement la luminosité et la température de couleur pour simuler
@@ -44,6 +44,14 @@ blueprint:
     - `input_boolean` pour activer/désactiver
     - Lumière avec support luminosité + température de couleur
 
+
+    **Changelog v1.3 :** réorganisation des catégories — `duration_number` et
+    `step_interval` (paramètres de timing partagés par les deux lampes, pas
+    propres à l'une ou l'autre) déplacés dans "1️⃣ Essentiel" ; "2️⃣ Courbe de
+    lever de soleil" renommée "2️⃣ Courbe — Lampe principale" et ne contient
+    plus que les valeurs réellement propres à la lampe 1
+    (`start_brightness`/`end_brightness`/`start_kelvin`/`end_kelvin`),
+    symétrique à ce que contient "2️⃣bis" pour la lampe 2.
 
     **Changelog v1.2 :** 3 corrections — (1) section "Deuxième lampe dérivée"
     déplacée juste après "Courbe de lever de soleil" au lieu d'après "Jours
@@ -132,11 +140,6 @@ blueprint:
               filter:
                 - domain: input_boolean
 
-    # ─────────────────────────────────────────────────────
-    section_curve:
-      name: 2️⃣ Courbe de lever de soleil
-      icon: mdi:brightness-6
-      input:
         duration_number:
           name: Durée du lever (input_number)
           description: >
@@ -146,12 +149,38 @@ blueprint:
             Le sensor de démarrage lit ce helper automatiquement — si tu changes
             la durée ici, l'heure de démarrage se recalcule toute seule.
 
+            Pilote la cadence des DEUX lampes (pas propre à une lampe en
+            particulier) — d'où sa place ici plutôt que dans une section
+            "par lampe".
+
             Valeur recommandée : **25 min** (consensus scientifique).
           selector:
             entity:
               filter:
                 - domain: input_number
 
+        step_interval:
+          name: Intervalle entre chaque pas (secondes)
+          description: >
+            Temps entre deux ajustements. Philips Hue : 10-15s recommandé.
+            Plus court = plus fluide, mais plus d'appels Zigbee.
+
+            Comme `duration_number`, pilote la cadence des deux lampes —
+            groupé ici plutôt que dans "Courbe — Lampe principale".
+          default: 15
+          selector:
+            number:
+              min: 5
+              max: 60
+              step: 5
+              unit_of_measurement: s
+              mode: slider
+
+    # ─────────────────────────────────────────────────────
+    section_curve:
+      name: 2️⃣ Courbe — Lampe principale
+      icon: mdi:brightness-6
+      input:
         start_brightness:
           name: Luminosité de départ (%)
           description: >
@@ -205,20 +234,6 @@ blueprint:
               max: 6500
               step: 100
               unit_of_measurement: K
-              mode: slider
-
-        step_interval:
-          name: Intervalle entre chaque pas (secondes)
-          description: >
-            Temps entre deux ajustements. Philips Hue : 10-15s recommandé.
-            Plus court = plus fluide, mais plus d'appels Zigbee.
-          default: 15
-          selector:
-            number:
-              min: 5
-              max: 60
-              step: 5
-              unit_of_measurement: s
               mode: slider
 
     # ─────────────────────────────────────────────────────
