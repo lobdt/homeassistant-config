@@ -1,0 +1,315 @@
+blueprint:
+  name: Media Volume Lock
+  description: >
+    # 🔒 Media Volume Lock
+
+    **Version: 1.0**
+
+
+    Verrouille le volume d'un lecteur média (HomePod, enceinte AirPlay…) à une
+    valeur fixe, et le rétablit dès qu'il en dévie — dans un sens comme dans
+    l'autre. Coupe optionnellement la lecture quand un mode nuit est actif.
+
+
+    **Cas d'usage typique :** une enceinte dont le volume ne doit jamais
+    bouger, que la dérive vienne d'un capteur tactile défectueux, d'une
+    manipulation involontaire, ou d'une application tierce.
+
+
+    ## Les 3 mécanismes de correction
+
+    Ils sont complémentaires et se rattrapent mutuellement :
+
+
+    1. **Au démarrage de la lecture** — le volume est forcé dès que le lecteur
+    passe en lecture.
+
+
+    2. **À chaque changement de volume (événementiel)** — déclenchement sur
+    *chaque* valeur reçue, pas seulement au franchissement d'un seuil. C'est
+    volontairement plus agressif qu'un `numeric_state above/below` : mesuré sur
+    l'installation d'origine, la version à seuil laissait passer des séries de
+    8 à 10 valeurs non corrigées lors d'une rafale, contre 1 à 2 avec cette
+    approche.
+
+
+    3. **Watchdog périodique** — vérification à intervalle régulier, quel que
+    soit l'état des événements. Filet de sécurité si un changement de volume
+    n'a jamais produit d'événement côté Home Assistant : événement perdu,
+    redémarrage de HA, reconnexion de l'intégration laissant une valeur
+    obsolète.
+
+
+    ## ⚠️ Limite connue, à comprendre avant d'installer
+
+    Aucun de ces mécanismes ne peut gagner une course contre une **source
+    concurrente qui écrit en continu** — un doigt maintenu sur une surface
+    tactile, par exemple. Tant que le flux de nouvelles valeurs ne s'arrête
+    pas, chaque correction est écrasée par la valeur suivante avant d'avoir pu
+    se poser. Mesuré : pics jusqu'à 3× la valeur cible pendant un maintien de
+    quelques secondes. La correction reprend immédiatement dès que le flux
+    s'arrête. Cette limite est structurelle (latence réseau vers l'appareil),
+    pas un défaut de réglage — ce blueprint protège contre les dérives
+    *persistantes*, pas contre les pics *transitoires* d'un geste actif.
+
+
+    ## Suspension pendant les annonces vocales
+
+    Si un helper « annonce en cours » est renseigné, toute correction est
+    suspendue tant qu'il est actif. Indispensable si un script d'annonce (TTS)
+    monte volontairement le volume : sans ça, le verrou et l'annonce se
+    battent, et la coupure du mode nuit peut tuer le message en plein milieu.
+  domain: automation
+  source_url: https://github.com/lobdt/homeassistant-config/blob/main/blueprints/automation/lobdt/media_volume_lock.yaml
+
+  input:
+    section_player:
+      name: 1️⃣ Lecteur et volume
+      icon: mdi:speaker
+      collapsed: false
+      input:
+        media_player_entity:
+          name: Lecteur média
+          description: L'enceinte dont le volume doit rester verrouillé.
+          selector:
+            entity:
+              filter:
+                - domain: media_player
+
+        target_volume_pct:
+          name: Volume cible
+          description: >
+            La valeur à laquelle le volume est verrouillé, en pourcentage.
+            Toute déviation est corrigée vers cette valeur.
+          default: 25
+          selector:
+            number:
+              min: 1
+              max: 100
+              step: 1
+              unit_of_measurement: "%"
+              mode: slider
+
+    section_guards:
+      name: 2️⃣ Garde-fous
+      icon: mdi:shield-check-outline
+      collapsed: false
+      input:
+        tts_flag:
+          name: Helper « annonce vocale en cours » (optionnel)
+          description: >
+            Tant que ce booléen est actif, l'automation ne touche à rien.
+            À renseigner si un script d'annonce monte volontairement le volume.
+            Laisser vide si aucune annonce ne passe par ce lecteur.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_boolean
+
+        sleep_mode_flag:
+          name: Helper « mode nuit » (optionnel)
+          description: >
+            Quand ce booléen s'active pendant une lecture, ou quand une lecture
+            démarre alors qu'il est déjà actif, la lecture est mise en pause.
+            Laisser vide pour désactiver toute la logique de coupure nocturne.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: input_boolean
+
+    section_pause:
+      name: 3️⃣ Mise en pause automatique
+      icon: mdi:pause-octagon-outline
+      collapsed: true
+      input:
+        pause_delay_sleep_seconds:
+          name: Délai avant pause — mode nuit actif
+          description: >
+            Secondes d'attente avant de mettre en pause quand le mode nuit est
+            actif. 0 = coupure immédiate. Un court délai (2-3 s) laisse le temps
+            à une annonce déjà lancée de se terminer.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 60
+              step: 1
+              unit_of_measurement: s
+              mode: box
+
+        auto_pause_normal_minutes:
+          name: Pause automatique hors mode nuit
+          description: >
+            Minutes après le démarrage de la lecture avant mise en pause, quand
+            le mode nuit n'est PAS actif. **0 = désactivé** (le lecteur joue
+            aussi longtemps que voulu). Ne mettre une valeur que pour une
+            enceinte dédiée aux annonces courtes, jamais pour de l'écoute réelle.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 240
+              step: 1
+              unit_of_measurement: min
+              mode: box
+
+    section_watchdog:
+      name: 4️⃣ Watchdog périodique
+      icon: mdi:timer-sync-outline
+      collapsed: true
+      input:
+        watchdog_pattern:
+          name: Fréquence de vérification
+          description: >
+            Intervalle de la vérification périodique du volume. Rattrape une
+            dérive dont l'événement n'est jamais arrivé jusqu'à Home Assistant.
+            Plus court = rattrapage plus rapide, mais plus d'exécutions à vide
+            (chaque passage sans dérive ne fait rien, le coût reste faible).
+          default: "/30"
+          selector:
+            select:
+              options:
+                - label: Toutes les 10 secondes
+                  value: "/10"
+                - label: Toutes les 15 secondes
+                  value: "/15"
+                - label: Toutes les 30 secondes (recommandé)
+                  value: "/30"
+                - label: Toutes les minutes
+                  value: "/60"
+
+variables:
+  media_player_entity: !input media_player_entity
+  target_volume_pct: !input target_volume_pct
+  tts_flag: !input tts_flag
+  sleep_mode_flag: !input sleep_mode_flag
+  auto_pause_normal_minutes: !input auto_pause_normal_minutes
+
+triggers:
+  - trigger: state
+    entity_id: !input media_player_entity
+    to: playing
+    id: playing
+
+  - trigger: state
+    entity_id: !input media_player_entity
+    attribute: volume_level
+    id: vol_drift
+
+  - trigger: state
+    entity_id: !input sleep_mode_flag
+    to: "on"
+    id: sleep_on
+
+  - trigger: time_pattern
+    seconds: !input watchdog_pattern
+    id: watchdog
+
+conditions:
+  # Suspension totale pendant une annonce vocale (si le helper est renseigné).
+  - condition: template
+    value_template: >
+      {{ tts_flag | count == 0
+         or expand(tts_flag) | selectattr('state', 'eq', 'on') | list | count == 0 }}
+
+actions:
+  - choose:
+      # ── Dérive de volume (événementiel) ────────────────────────────────
+      - alias: Volume devie hors cible - correction immediate
+        conditions:
+          - condition: trigger
+            id: vol_drift
+          - condition: template
+            value_template: >
+              {% set v = trigger.to_state.attributes.volume_level %}
+              {{ v is not none
+                 and (v - (target_volume_pct | float(25) / 100)) | abs > 0.001 }}
+        sequence:
+          - action: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: "{{ target_volume_pct | float(25) / 100 }}"
+
+      # ── Watchdog periodique ────────────────────────────────────────────
+      - alias: Watchdog - rattrape une derive dont l'evenement s'est perdu
+        conditions:
+          - condition: trigger
+            id: watchdog
+          - condition: template
+            value_template: >
+              {% set st = states(media_player_entity) %}
+              {% set v = state_attr(media_player_entity, 'volume_level') %}
+              {{ st in ['playing', 'paused', 'idle']
+                 and v is not none
+                 and (v - (target_volume_pct | float(25) / 100)) | abs > 0.001 }}
+        sequence:
+          - action: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: "{{ target_volume_pct | float(25) / 100 }}"
+
+      # ── Demarrage de lecture ───────────────────────────────────────────
+      - alias: Lecture demarree - force le volume puis gere la pause auto
+        conditions:
+          - condition: trigger
+            id: playing
+        sequence:
+          - action: media_player.volume_set
+            target:
+              entity_id: !input media_player_entity
+            data:
+              volume_level: "{{ target_volume_pct | float(25) / 100 }}"
+          - choose:
+              # Mode nuit deja actif au demarrage -> pause
+              - alias: Mode nuit deja actif
+                conditions:
+                  - condition: template
+                    value_template: >
+                      {{ sleep_mode_flag | count > 0
+                         and expand(sleep_mode_flag)
+                             | selectattr('state', 'eq', 'on') | list | count > 0 }}
+                sequence:
+                  - delay:
+                      seconds: !input pause_delay_sleep_seconds
+                  - action: media_player.media_pause
+                    target:
+                      entity_id: !input media_player_entity
+              # Hors mode nuit -> pause auto seulement si configuree
+              - alias: Hors mode nuit et pause auto configuree
+                conditions:
+                  - condition: template
+                    value_template: "{{ auto_pause_normal_minutes | int(0) > 0 }}"
+                sequence:
+                  - delay:
+                      minutes: !input auto_pause_normal_minutes
+                  - action: media_player.media_pause
+                    target:
+                      entity_id: !input media_player_entity
+
+      # ── Le mode nuit s'active pendant la lecture ───────────────────────
+      - alias: Mode nuit active pendant la lecture - pause
+        conditions:
+          - condition: trigger
+            id: sleep_on
+          - condition: state
+            entity_id: !input media_player_entity
+            state: playing
+        sequence:
+          - delay:
+              seconds: !input pause_delay_sleep_seconds
+          - action: media_player.media_pause
+            target:
+              entity_id: !input media_player_entity
+
+# parallel : une correction de volume ne doit jamais etre jetee parce qu'une
+# autre instance tourne encore (les delais de pause peuvent durer plusieurs
+# minutes). max eleve car chaque correction ne dure que ~50-90 ms : en rafale,
+# un max trop bas fait silencieusement tomber des declenchements.
+mode: parallel
+max: 100
