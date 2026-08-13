@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.4**
+    **Version: 5.5**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -44,6 +44,24 @@ blueprint:
        anciennes), une notification dédiée est envoyée.
 
 
+    **Changelog v5.5 :** nouvel input optionnel **Auto-réparation** (section
+    watchdog). Quand activé, si un capteur approche le seuil "Âge maximum des
+    données" (à 80% de sa valeur, sans nouveau réglage à gérer), l'automation
+    tente de recharger automatiquement l'intégration propriétaire du capteur
+    via `homeassistant.reload_config_entry` ciblé sur l'entité — HA résout
+    lui-même l'intégration, aucun ID à renseigner. Générique, pas spécifique
+    à Matter : s'applique à toute intégration qui expose un service de
+    rechargement. Né d'un cas réel : un capteur de fuite Matter (IKEA
+    KLIPPBOK) resté 51h sans transmettre après un redémarrage HA, alors que
+    le device restait "disponible" côté fabric — désync entre la session
+    Matter (rétablie) et l'abonnement aux rapports d'attributs (jamais
+    renouvelé). Un rechargement manuel de l'intégration a suffi à réparer ;
+    ce nouvel input tente la même chose automatiquement, avant que le
+    watchdog n'alerte. Implémenté en action indépendante après le `choose:`
+    principal (pas une branche de plus dedans) pour ne jamais empêcher la
+    vraie notification watchdog de se déclencher le même cycle. Dédup 1x/24h,
+    même mécanique que le watchdog existant. Défaut `false` — n'affecte
+    aucune instance existante sans activation explicite.
     **Changelog v5.4 :** réintroduction de l'alerte critique/bouton OK,
     contournée en v5.1. `notify.send_message` ne pouvant toujours pas
     transporter de payload critique (vérifié, schéma fixe), 4 nouveaux
@@ -378,6 +396,23 @@ blueprint:
             text:
               multiline: true
 
+        auto_reload_integration:
+          name: Auto-réparation — recharger l'intégration si capteur proche du seuil
+          description: >
+            Si activé, quand un capteur approche le seuil "Âge maximum des
+            données" ci-dessus (à 80% de sa valeur), l'automation tente de
+            recharger automatiquement l'intégration propriétaire de ce
+            capteur (`homeassistant.reload_config_entry` ciblé sur
+            l'entité — HA résout lui-même l'intégration). Utile pour les
+            capteurs Matter/Thread sujets à une désync d'abonnement après un
+            redémarrage : la session bas niveau se rétablit mais les
+            rapports d'attributs non, jusqu'à ce que l'intégration soit
+            rechargée. Sans effet néfaste si l'intégration n'a pas ce
+            problème — juste un rechargement inutile occasionnel.
+          default: false
+          selector:
+            boolean: {}
+
 variables:
   numeric_entity: !input numeric_entity
   numeric_above: !input numeric_above
@@ -396,6 +431,7 @@ variables:
   watchdog_check_frequency: !input watchdog_check_frequency
   # Intervalle réel en minutes derriere le select '/5', '/15', '/30'
   watchdog_check_minutes: "{{ watchdog_check_frequency | replace('/', '') | int(15) }}"
+  auto_reload_integration: !input auto_reload_integration
   # Normalisation : chaque champ peut contenir une string (anciennes
   # instances, avant le passage a multiple: true) ou une liste (nouvelles
   # instances / multi-capteurs). On uniformise en liste partout ensuite.
@@ -681,5 +717,30 @@ action:
           data:
             title: "{{ watchdog_title }}"
             message: "{{ watchdog_message }}"
+
+  # ── Auto-réparation (v5.5) — indépendante du choose ci-dessus ────────────
+  # Volontairement PAS une branche de plus dans le choose : le choose est
+  # mutuellement exclusif (une seule branche par declenchement), et la
+  # reparation (a 80% du seuil) doit pouvoir tourner sans empecher la vraie
+  # alerte watchdog (a 100%) de se declencher le meme cycle si besoin.
+  - if:
+      - condition: template
+        value_template: "{{ auto_reload_integration and max_age_minutes > 0 and trigger is defined and trigger.id == 'watchdog_periodic' }}"
+    then:
+      - repeat:
+          for_each: "{{ watched_entities }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >
+                    {% set reload_threshold = max_age_minutes * 0.8 %}
+                    {% set stale_min = (now() - states[repeat.item].last_updated).total_seconds() / 60 %}
+                    {{ stale_min > reload_threshold and (stale_min - reload_threshold) % 1440 < watchdog_check_minutes }}
+              then:
+                - action: homeassistant.reload_config_entry
+                  target:
+                    entity_id: "{{ repeat.item }}"
+                  continue_on_error: true
+    alias: "Auto-reparation : recharge l'integration proprietaire avant que le watchdog n'alerte (opt-in, defaut false)"
 
 mode: restart
