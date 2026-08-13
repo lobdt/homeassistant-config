@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔒 Media Volume Lock
 
-    **Version: 1.0**
+    **Version: 1.1**
 
 
     Verrouille le volume d'un lecteur média (HomePod, enceinte AirPlay…) à une
@@ -33,11 +33,20 @@ blueprint:
     approche.
 
 
-    3. **Watchdog périodique** — vérification à intervalle régulier, quel que
-    soit l'état des événements. Filet de sécurité si un changement de volume
-    n'a jamais produit d'événement côté Home Assistant : événement perdu,
-    redémarrage de HA, reconnexion de l'intégration laissant une valeur
-    obsolète.
+    3. **Watchdog** — se déclenche si le volume reste hors cible *sans
+    interruption* pendant la durée configurée. Filet de sécurité si un
+    changement de volume n'a jamais produit d'événement côté Home Assistant :
+    événement perdu, redémarrage de HA, reconnexion de l'intégration laissant
+    une valeur obsolète.
+
+
+    > **v1.1** — le watchdog était un `time_pattern` (vérification à intervalle
+    > fixe). Remplacé par un trigger `template` avec `for:` : même couverture,
+    > mais il ne s'exécute que lorsqu'il y a réellement une dérive à rattraper.
+    > Le `time_pattern` créait une exécution — et donc une trace — à chaque
+    > intervalle même quand tout allait bien : Home Assistant ne conservant que
+    > 5 traces par automation, l'historique de débogage était intégralement
+    > écrasé en moins de 3 minutes. Constaté en production dès le premier jour.
 
 
     ## ⚠️ Limite connue, à comprendre avant d'installer
@@ -162,25 +171,28 @@ blueprint:
       icon: mdi:timer-sync-outline
       collapsed: true
       input:
-        watchdog_pattern:
-          name: Fréquence de vérification
+        watchdog_seconds:
+          name: Durée avant rattrapage
           description: >
-            Intervalle de la vérification périodique du volume. Rattrape une
-            dérive dont l'événement n'est jamais arrivé jusqu'à Home Assistant.
-            Plus court = rattrapage plus rapide, mais plus d'exécutions à vide
-            (chaque passage sans dérive ne fait rien, le coût reste faible).
-          default: "/30"
+            Si le volume reste hors cible **sans interruption** pendant cette
+            durée, le watchdog force la correction. Ne se déclenche donc que
+            si la correction événementielle a échoué ou n'a jamais eu lieu
+            (événement perdu, redémarrage, intégration déconnectée).
+          default: 30
           selector:
-            select:
-              options:
-                - label: Toutes les 10 secondes
-                  value: "/10"
-                - label: Toutes les 15 secondes
-                  value: "/15"
-                - label: Toutes les 30 secondes (recommandé)
-                  value: "/30"
-                - label: Toutes les minutes
-                  value: "/60"
+            number:
+              min: 10
+              max: 300
+              step: 5
+              unit_of_measurement: s
+              mode: box
+
+# Variables dédiées aux triggers : un `!input` ne peut pas être utilisé
+# directement dans un template, et le bloc `variables:` classique n'est pas
+# disponible au moment de l'évaluation des triggers.
+trigger_variables:
+  tv_media_player_entity: !input media_player_entity
+  tv_target_volume_pct: !input target_volume_pct
 
 variables:
   media_player_entity: !input media_player_entity
@@ -205,8 +217,19 @@ triggers:
     to: "on"
     id: sleep_on
 
-  - trigger: time_pattern
-    seconds: !input watchdog_pattern
+  # Watchdog : se déclenche UNIQUEMENT si le volume reste hors cible en continu
+  # pendant la durée configurée. Un `time_pattern` ferait le même travail, mais
+  # créerait une exécution (et une trace) à chaque intervalle même quand tout va
+  # bien — ce qui noie l'historique de traces, limité à 5 par automation, et rend
+  # tout débogage impossible. Ici, une trace = un vrai problème.
+  - trigger: template
+    value_template: >
+      {% set v = state_attr(tv_media_player_entity, 'volume_level') %}
+      {{ states(tv_media_player_entity) in ['playing', 'paused', 'idle']
+         and v is not none
+         and (v - (tv_target_volume_pct | float(25) / 100)) | abs > 0.001 }}
+    for:
+      seconds: !input watchdog_seconds
     id: watchdog
 
 conditions:
