@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔒 Media Volume Lock
 
-    **Version: 1.1**
+    **Version: 1.2**
 
 
     Verrouille le volume d'un lecteur média (HomePod, enceinte AirPlay…) à une
@@ -68,6 +68,27 @@ blueprint:
     suspendue tant qu'il est actif. Indispensable si un script d'annonce (TTS)
     monte volontairement le volume : sans ça, le verrou et l'annonce se
     battent, et la coupure du mode nuit peut tuer le message en plein milieu.
+
+
+    ## v1.2 — Alerte si le problème persiste vraiment
+
+    Nouveau 4ème mécanisme, optionnel : si le volume reste hors cible **sans
+    interruption** pendant une durée configurable, plus longue que celle du
+    watchdog, une lumière s'allume et/ou une notification part. Le principe :
+    la correction événementielle et le watchdog continuent d'agir
+    indépendamment (ils ne s'arrêtent jamais), mais si malgré ça le volume
+    reste bloqué en continu bien plus longtemps que ce qu'un geste humain
+    peut produire, c'est le signe d'un vrai problème matériel — celui qui a
+    causé l'incident fondateur de ce blueprint (21 minutes de dérive
+    ininterrompue, sans que personne ne le sache avant le lendemain).
+
+
+    > **Réglage important** : mettre ce délai *au-dessus* du délai du
+    > watchdog (section 4). Comme les deux utilisent la même détection
+    > (« hors cible en continu »), un délai d'alerte plus court que le
+    > watchdog déclencherait l'alerte avant même que le watchdog n'ait eu sa
+    > chance d'agir — sur une simple manipulation un peu insistante, pas
+    > seulement sur une vraie panne.
   domain: automation
   source_url: https://github.com/lobdt/homeassistant-config/blob/main/blueprints/automation/lobdt/media_volume_lock.yaml
 
@@ -187,6 +208,53 @@ blueprint:
               unit_of_measurement: s
               mode: box
 
+    section_alert:
+      name: 5️⃣ Alerte si panne persistante (optionnel)
+      icon: mdi:alert-octagon-outline
+      collapsed: true
+      input:
+        escalation_seconds:
+          name: Délai avant alerte de panne
+          description: >
+            Si le volume reste hors cible SANS INTERRUPTION pendant cette
+            durée, déclenche l'alerte visuelle/notification ci-dessous — en
+            plus de la correction normale, qui continue d'agir
+            indépendamment et ne s'arrête jamais. À régler au-dessus du délai
+            du watchdog (section 4) : voir l'avertissement plus haut dans
+            cette page.
+          default: 300
+          selector:
+            number:
+              min: 1
+              max: 1800
+              step: 1
+              unit_of_measurement: s
+              mode: slider
+
+        alert_light_entity:
+          name: Lumière d'alerte (optionnel)
+          description: >
+            S'allume à 100% si le délai ci-dessus est atteint. Laisser vide
+            pour désactiver l'alerte visuelle.
+          default: ""
+          selector:
+            entity:
+              filter:
+                - domain: light
+
+        alert_notify_targets:
+          name: Notifications d'alerte (optionnel)
+          description: >
+            Envoie un message à chacune de ces entités si le délai ci-dessus
+            est atteint. Laisser vide pour désactiver. Exemple : un canal
+            ntfy critique et une entité email.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: notify
+
 # Variables dédiées aux triggers : un `!input` ne peut pas être utilisé
 # directement dans un template, et le bloc `variables:` classique n'est pas
 # disponible au moment de l'évaluation des triggers.
@@ -200,6 +268,9 @@ variables:
   tts_flag: !input tts_flag
   sleep_mode_flag: !input sleep_mode_flag
   auto_pause_normal_minutes: !input auto_pause_normal_minutes
+  alert_light_entity: !input alert_light_entity
+  alert_notify_targets: !input alert_notify_targets
+  escalation_seconds: !input escalation_seconds
 
 triggers:
   - trigger: state
@@ -231,6 +302,20 @@ triggers:
     for:
       seconds: !input watchdog_seconds
     id: watchdog
+
+  # Alerte de panne : meme detection que le watchdog, mais avec un delai
+  # nettement plus long. Ne peut se declencher que si le probleme persiste
+  # bien au-dela de ce qu'un geste humain (meme un maintien continu du
+  # tactile) produit en pratique.
+  - trigger: template
+    value_template: >
+      {% set v = state_attr(tv_media_player_entity, 'volume_level') %}
+      {{ states(tv_media_player_entity) in ['playing', 'paused', 'idle']
+         and v is not none
+         and (v - (tv_target_volume_pct | float(25) / 100)) | abs > 0.001 }}
+    for:
+      seconds: !input escalation_seconds
+    id: critical
 
 conditions:
   # Suspension totale pendant une annonce vocale (si le helper est renseigné).
@@ -329,6 +414,39 @@ actions:
           - action: media_player.media_pause
             target:
               entity_id: !input media_player_entity
+
+      # ── Panne persistante (v1.2) ───────────────────────────────────────
+      # Purement informatif : ne corrige rien elle-meme (le watchdog et le
+      # trigger evenementiel continuent d'agir independamment). Alerte
+      # seulement si une lumiere et/ou une notification ont ete configurees.
+      - alias: Deviation persistante - alerte visuelle et notification
+        conditions:
+          - condition: trigger
+            id: critical
+        sequence:
+          - if:
+              - condition: template
+                value_template: "{{ alert_light_entity not in [none, ''] }}"
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: "{{ alert_light_entity }}"
+                data:
+                  brightness_pct: 100
+          - repeat:
+              for_each: "{{ alert_notify_targets }}"
+              sequence:
+                - action: notify.send_message
+                  target:
+                    entity_id: "{{ repeat.item }}"
+                  data:
+                    title: "⚠️ Volume bloque"
+                    message: >
+                      {{ state_attr(media_player_entity, 'friendly_name')
+                         or media_player_entity }} : le volume reste hors de
+                      sa valeur verrouillee ({{ target_volume_pct }}%) depuis
+                      plus de {{ escalation_seconds }} secondes sans
+                      interruption. A verifier.
 
 # parallel : une correction de volume ne doit jamais etre jetee parce qu'une
 # autre instance tourne encore (les delais de pause peuvent durer plusieurs
