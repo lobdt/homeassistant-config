@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🌅 Simulateur d'Aube — Réveil Progressif
 
-    **Version: 1.3**
+    **Version: 1.4**
 
 
     Monte progressivement la luminosité et la température de couleur pour simuler
@@ -44,6 +44,15 @@ blueprint:
     - `input_boolean` pour activer/désactiver
     - Lumière avec support luminosité + température de couleur
 
+
+    **Changelog v1.4 :** correctif — la lampe 2 sous le seuil bas recevait un
+    `light.turn_off` répété à chaque pas de la rampe (toutes les
+    `step_interval`), même déjà éteinte. Chaque appel portait une
+    `transition` égale à l'intervalle des pas, jamais laissée le temps de se
+    terminer avant le suivant → `Operation aborted` en boucle
+    (`continue_on_error: true` masquait l'échec). Ajout d'une garde
+    `condition: state` (lampe 2 actuellement "on" ?) avant l'appel : plus
+    aucun appel redondant sur une lampe déjà éteinte.
 
     **Changelog v1.3 :** réorganisation des catégories — `duration_number` et
     `step_interval` (paramètres de timing partagés par les deux lampes, pas
@@ -587,6 +596,9 @@ action:
                     - condition: template
                       value_template: "{{ (l1_pct_now | float) < (light_entity_2_low_threshold | float) }}"
                   sequence:
+                    - condition: state
+                      entity_id: !input light_entity_2
+                      state: "on"
                     - action: light.turn_off
                       target:
                         entity_id: !input light_entity_2
