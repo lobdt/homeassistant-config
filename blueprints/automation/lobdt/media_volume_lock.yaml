@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔒 Media Volume Lock
 
-    **Version: 1.2**
+    **Version: 1.3**
 
 
     Verrouille le volume d'un lecteur média (HomePod, enceinte AirPlay…) à une
@@ -89,6 +89,17 @@ blueprint:
     > watchdog déclencherait l'alerte avant même que le watchdog n'ait eu sa
     > chance d'agir — sur une simple manipulation un peu insistante, pas
     > seulement sur une vraie panne.
+
+
+    ## v1.3 — Correctif : plantage si `volume_level` disparaît
+
+    La branche de correction événementielle lisait l'attribut via
+    `trigger.to_state.attributes.volume_level`, un accès direct qui lève une
+    erreur si l'attribut est absent — ce qui arrive quand le lecteur décroche
+    (`ConnectionRefusedError` côté intégration, dict d'attributs sans
+    `volume_level`). Remplacé par `state_attr(media_player_entity,
+    'volume_level')`, qui renvoie `None` proprement au lieu de planter — le
+    même motif déjà utilisé par le watchdog et l'alerte de panne persistante.
   domain: automation
   source_url: https://github.com/lobdt/homeassistant-config/blob/main/blueprints/automation/lobdt/media_volume_lock.yaml
 
@@ -333,7 +344,7 @@ actions:
             id: vol_drift
           - condition: template
             value_template: >
-              {% set v = trigger.to_state.attributes.volume_level %}
+              {% set v = state_attr(media_player_entity, 'volume_level') %}
               {{ v is not none
                  and (v - (target_volume_pct | float(25) / 100)) | abs > 0.001 }}
         sequence:
