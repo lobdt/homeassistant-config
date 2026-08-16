@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.5**
+    **Version: 5.6**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,17 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.6 :** correctif — le trigger `time_pattern` du watchdog
+    périodique était inconditionnel, il tournait même sur une instance sans
+    watchdog configuré (`max_age_minutes: 0`, valeur par défaut). Cas réel :
+    l'instance swap (watchdog volontairement retiré le 15/08/2026 après un
+    faux positif) exécutait ce trigger 48×/jour pour rien, écrasant sa propre
+    historique de traces (HA n'en garde que 5) avec des exécutions à vide.
+    Ajout de `enabled: "{{ max_age_minutes | int(0) > 0 }}"` sur le trigger :
+    évalué une fois au chargement, il désactive proprement le trigger sur
+    toute instance sans watchdog réel, sans toucher aux instances qui en ont
+    un (frigo, congélateur, fuite cave — comportement inchangé).
 
     **Changelog v5.5 :** nouvel input optionnel **Auto-réparation** (section
     watchdog). Quand activé, si un capteur approche le seuil "Âge maximum des
@@ -532,8 +543,13 @@ trigger:
     id: watchdog_unavailable_state
 
   # Trigger watchdog périodique — vérifie l'âge des données
+  # v5.6 : desactive au chargement si aucun watchdog n'est configure
+  # (max_age_minutes: 0, defaut) -- evite un time_pattern qui tourne pour
+  # rien et ecrase l'historique de traces (5 max) sur les instances sans
+  # watchdog reel (ex: swap). Sans effet sur les instances qui en ont un.
   - trigger: time_pattern
     minutes: !input watchdog_check_frequency
+    enabled: "{{ max_age_minutes | int(0) > 0 }}"
     id: watchdog_periodic
 
 condition: []
