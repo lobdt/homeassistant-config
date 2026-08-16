@@ -424,6 +424,13 @@ blueprint:
           selector:
             boolean: {}
 
+trigger_variables:
+  # v5.6 : necessaire pour le enabled: du trigger watchdog_periodic --
+  # ce champ est evalue au chargement de l'automation, avant que le bloc
+  # variables: (evalue par run) n'existe. Seul trigger_variables: est visible
+  # a ce moment-la (voir skill best-practices HA, section trigger_variables).
+  tv_max_age_minutes: !input max_age_minutes
+
 variables:
   numeric_entity: !input numeric_entity
   numeric_above: !input numeric_above
@@ -549,7 +556,7 @@ trigger:
   # watchdog reel (ex: swap). Sans effet sur les instances qui en ont un.
   - trigger: time_pattern
     minutes: !input watchdog_check_frequency
-    enabled: "{{ max_age_minutes | int(0) > 0 }}"
+    enabled: "{{ tv_max_age_minutes | int(0) > 0 }}"
     id: watchdog_periodic
 
 condition: []
