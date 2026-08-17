@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🌅 Simulateur d'Aube — Réveil Progressif
 
-    **Version: 1.4**
+    **Version: 1.5**
 
 
     Monte progressivement la luminosité et la température de couleur pour simuler
@@ -44,6 +44,31 @@ blueprint:
     - `input_boolean` pour activer/désactiver
     - Lumière avec support luminosité + température de couleur
 
+
+    **Changelog v1.5 :** nouvel input optionnel **Extinction automatique après
+    le lever** (`auto_off_minutes`, section 1️⃣, défaut **0 = désactivé**).
+    Éteint les lampes du lever N minutes après la fin de la rampe si elles
+    sont encore allumées.
+
+    Comble un trou structurel du blueprint : il **allume mais n'éteint
+    jamais**. En usage normal un détecteur de mouvement prend le relais —
+    mais si personne ne passe, les lampes restent allumées toute la journée.
+    Trois cas réels où ça arrive : absence prolongée (vacances), porte de la
+    pièce fermée (les animaux ne peuvent pas déclencher le détecteur), et le
+    plus vicieux — la garde de luminosité du détecteur de mouvement empêche
+    son cycle de démarrer *parce que la pièce est justement éclairée par ce
+    blueprint*, donc l'extinction n'a jamais lieu même en présence de
+    mouvement.
+
+    Défaut à 0 : **aucune instance existante ne change de comportement**.
+
+    Limites assumées, à connaître avant d'activer : (1) aucune condition de
+    présence — si quelqu'un est encore dans la pièce au bout du délai, la
+    lumière s'éteint quand même ; choisir un délai large. (2) Repose sur un
+    `delay`, donc un redémarrage de HA pendant l'attente fait perdre
+    l'extinction pour ce jour-là. Compromis accepté : le coût d'un échec est
+    « lampes allumées une journée », pas une panne de sécurité — le motif
+    robuste (`input_datetime` + vérification séparée) serait disproportionné.
 
     **Changelog v1.4 :** correctif — la lampe 2 sous le seuil bas recevait un
     `light.turn_off` répété à chaque pas de la rampe (toutes les
@@ -184,6 +209,38 @@ blueprint:
               step: 5
               unit_of_measurement: s
               mode: slider
+
+        auto_off_minutes:
+          name: Extinction automatique après le lever (minutes)
+          description: >
+            Éteint les lampes du lever ce nombre de minutes **après la fin de
+            la rampe**, si elles sont encore allumées.
+
+            **0 = désactivé** — comportement historique, les lampes restent
+            allumées jusqu'à ce qu'autre chose les éteigne.
+
+            À quoi ça sert : ce blueprint **allume mais n'éteint jamais**. En
+            usage normal c'est un détecteur de mouvement qui prend le relais.
+            Mais si personne ne passe dans la pièce, les lampes restent
+            allumées toute la journée — cas typiques : absence prolongée,
+            porte de la pièce fermée, ou garde de luminosité du détecteur qui
+            empêche son cycle de démarrer *parce que la pièce est justement
+            éclairée par ce blueprint*.
+
+            ⚠️ **Aucune condition de présence** : si tu es encore dans la
+            pièce au bout du délai, la lumière s'éteindra quand même. Choisir
+            une valeur assez large pour couvrir la routine du matin.
+
+            ⚠️ Repose sur un `delay` : un redémarrage de Home Assistant
+            pendant l'attente fait perdre l'extinction pour ce jour-là.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 240
+              step: 5
+              unit_of_measurement: min
+              mode: box
 
     # ─────────────────────────────────────────────────────
     section_curve:
@@ -434,6 +491,7 @@ variables:
   start_kelvin: !input start_kelvin
   end_kelvin: !input end_kelvin
   step_interval: !input step_interval
+  auto_off_minutes: !input auto_off_minutes
   days_of_week: !input days_of_week
   light_entity: !input light_entity
   al_switch: !input al_switch
@@ -720,3 +778,40 @@ action:
   # 9. Actions post-lever
   - choose: []
     default: !input post_sunrise_actions
+
+  # 10. Extinction automatique différée (v1.5) — optionnelle, 0 = désactivée
+  #     Placée en toute fin volontairement : les actions post-lever ont déjà
+  #     tourné, et si la lampe principale avait été éteinte manuellement, la
+  #     condition bloquante de l'étape 7 aurait déjà arrêté la séquence — donc
+  #     arriver ici signifie que la rampe est allée au bout.
+  - alias: Extinction automatique différée après le lever (optionnel)
+    if:
+      - condition: template
+        value_template: "{{ auto_off_minutes | int(0) > 0 }}"
+    then:
+      - delay:
+          minutes: "{{ auto_off_minutes | int(0) }}"
+
+      - if:
+          - condition: state
+            entity_id: !input light_entity
+            state: "on"
+        then:
+          - action: light.turn_off
+            target:
+              entity_id: !input light_entity
+            alias: Extinction différée — lampe principale
+            continue_on_error: true
+
+      - if:
+          - condition: template
+            value_template: "{{ has_light_2 }}"
+          - condition: state
+            entity_id: !input light_entity_2
+            state: "on"
+        then:
+          - action: light.turn_off
+            target:
+              entity_id: !input light_entity_2
+            alias: Extinction différée — 2e lampe
+            continue_on_error: true
