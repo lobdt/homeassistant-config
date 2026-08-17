@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.6**
+    **Version: 5.7**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,44 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.7 :** correctif de fiabilité — **un seul canal de
+    notification en panne cassait toute la chaîne d'alerte.** Les 5 appels
+    `notify.send_message` portent désormais `continue_on_error: true`.
+
+    Constaté en production le 16/08/2026 : l'alerte frigo part à 21:00:09
+    vers 4 canaux, push Loïc et ntfy sont livrés, puis SMTP échoue
+    (`Failed to send email message due to a connection error`, 5 s de
+    timeout). L'exception remonte et **avorte la séquence** — la boucle
+    `repeat` qui devait répéter l'alerte toutes les 15 min n'a jamais
+    démarré. Sans conséquence ce jour-là parce que la température est
+    redescendue avant le 1er rappel : c'est de la chance, pas de la
+    conception.
+
+    Deux points vérifiés qui justifient ce choix plutôt qu'un découpage
+    canal par canal :
+    - **HA dispatche les entités d'un même appel en parallèle** (preuve :
+      ntfy, 4ᵉ de la liste, livré à 09.588 alors que SMTP, 3ᵉ, pendait
+      encore jusqu'à son timeout à 14.30). Un canal en panne ne bloque
+      donc pas les autres — `continue_on_error` ne change rien à la
+      livraison, il supprime uniquement la propagation fatale.
+    - **Isoler seulement le canal email serait arbitraire** : ntfy et les
+      push mobile_app (via Nabu Casa) peuvent tomber exactement pareil. Le
+      but d'un fan-out à 4 canaux est la redondance ; aucun canal ne doit
+      pouvoir tuer les trois autres ni la boucle de rappel.
+
+    Ce que ce flag ne masque PAS : l'erreur reste loguée au niveau ERROR
+    et visible dans la trace de l'étape. Ce qu'on perd est uniquement le
+    marquage « automation en échec ». Compromis assumé : pour une alerte
+    de sécurité, « les 3 autres canaux sont passés et la boucle continue »
+    vaut mieux que « l'automation passe au rouge et plus personne n'est
+    réalerté ». Le même correctif a été appliqué à
+    `fire_smoke_critical_alert.yaml`, où l'enjeu était l'escalade de
+    l'alarme incendie.
+
+    Note de cohérence : les chemins de push critique par personne
+    portaient déjà `continue_on_error: true` depuis la v5.4 — c'est
+    l'appel groupé générique qui faisait exception.
 
     **Changelog v5.6 :** correctif — le trigger `time_pattern` du watchdog
     périodique était inconditionnel, il tournait même sur une instance sans
@@ -572,6 +610,7 @@ action:
             - alert_state
       sequence:
         - action: notify.send_message
+          continue_on_error: true
           target:
             entity_id: "{{ notify_entity_generic }}"
           data:
@@ -635,6 +674,7 @@ action:
                     {{ state_list | select('is_state', alert_state) | list | length > 0 }}
                   {% endif %}
               - action: notify.send_message
+                continue_on_error: true
                 target:
                   entity_id: "{{ notify_entity_generic }}"
                 data:
@@ -689,6 +729,7 @@ action:
             {% endif %}
       sequence:
         - action: notify.send_message
+          continue_on_error: true
           target:
             entity_id: !input notify_entity
           data:
@@ -705,6 +746,7 @@ action:
           value_template: "{{ max_age_minutes > 0 }}"
       sequence:
         - action: notify.send_message
+          continue_on_error: true
           target:
             entity_id: !input notify_entity
           data:
@@ -735,6 +777,7 @@ action:
             {{ ns.stale }}
       sequence:
         - action: notify.send_message
+          continue_on_error: true
           target:
             entity_id: !input notify_entity
           data:

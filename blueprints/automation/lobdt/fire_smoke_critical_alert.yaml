@@ -30,6 +30,20 @@ blueprint:
       documentée ici pour ne pas être "corrigée" par erreur plus tard.
     - L'assistant d'auto-test (`test_start_trigger` / `test__notify_device`)
       reste basé sur un sélecteur `device`, non touché par ce fork.
+    - **16/08/2026 — `continue_on_error: true` sur les 5 appels
+      `notify.send_message`.** Sans ça, un seul canal de notification en
+      panne (SMTP injoignable, ntfy down, Nabu Casa coupé) fait lever une
+      exception qui **avorte toute la séquence** : la pré-alarme part, puis
+      le `wait_for_trigger` d'escalade et la boucle de rappel ne s'exécutent
+      jamais. Autrement dit, un serveur mail HS empêchait l'alarme incendie
+      d'escalader. Constaté en production le 16/08 sur le blueprint frère
+      `threshold_alert.yaml` (alerte frigo, erreur `Failed to send email
+      message due to a connection error` → boucle de rappel jamais démarrée).
+      Les autres cibles sont **quand même livrées** — HA dispatche les
+      entités d'un même appel en parallèle, vérifié sur horodatages — donc
+      ce flag ne change rien à la livraison, il supprime seulement la
+      propagation fatale. Les erreurs restent visibles dans le log et dans
+      la trace.
 
     # Smart Smoke System (description originale)
 
@@ -690,6 +704,7 @@ action:
       value_template: '{{ trigger is defined and trigger.id == "triggered_sound_test" }}'
     sequence:
     - action: notify.send_message
+      continue_on_error: true
       target:
         entity_id: '{{ input_alarm__notify_devices }}'
       data:
@@ -706,6 +721,7 @@ action:
               volume: '{{ input_ios__critical_volume }}'
     - delay: 5
     - action: notify.send_message
+      continue_on_error: true
       target:
         entity_id: '{{ input_alarm__notify_devices }}'
       data:
@@ -756,6 +772,7 @@ action:
                 value_template: '{{ tries < max_tries }}'
               sequence:
               - action: notify.send_message
+                continue_on_error: true
                 target:
                   entity_id: '{{ input_alarm__notify_devices }}'
                 data:
@@ -1167,6 +1184,7 @@ action:
           tries_alarm: 0
           max_tries_alarm: 5
       - action: notify.send_message
+        continue_on_error: true
         target:
           entity_id: '{{ input_alarm__notify_devices }}'
         data:
@@ -1227,6 +1245,7 @@ action:
               - variables:
                   tries_alarm: '{{ tries_alarm + 1 }}'
               - action: notify.send_message
+                continue_on_error: true
                 target:
                   entity_id: '{{ input_alarm__notify_devices }}'
                 data:
