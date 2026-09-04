@@ -30,6 +30,36 @@ blueprint:
       documentée ici pour ne pas être "corrigée" par erreur plus tard.
     - L'assistant d'auto-test (`test_start_trigger` / `test__notify_device`)
       reste basé sur un sélecteur `device`, non touché par ce fork.
+    - **🔴 04/09/2026 — L'ALARME N'ENVOYAIT AUCUNE NOTIFICATION. Correctif majeur.**
+      Les 5 appels `notify.send_message` portaient un bloc `data` imbriqué
+      (canal, priorité, son, payload critique iOS, boutons). Or ce service
+      n'accepte que `title` et `message` : **tous les appels étaient rejetés
+      par le schéma**, pour les quatre destinataires à la fois. Un départ de
+      feu pendant une absence faisait sonner les sirènes locales et
+      n'envoyait strictement rien — ni push, ni email, ni ntfy. Exactement
+      ce que l'instance disait avoir été créée pour corriger le 14/08.
+      Le `continue_on_error` ajouté le 16/08, correct par ailleurs, rendait
+      cet échec **totalement muet**.
+      Jamais vu en production parce que l'automatisation n'avait jamais
+      tourné : ni alarme réelle, ni auto-test, en 20 jours d'existence.
+      Trouvé par un audit externe le 03/09/2026 (constat 01).
+      **Correctif — deux voies en parallèle, motif repris de
+      `threshold_alert` v5.4 :**
+      (1) voie générique — `notify.send_message` vers `notify_entity_generic`
+      avec `title`/`message` seuls, pour l'email et ntfy qui ne savent de
+      toute façon pas exploiter le reste ;
+      (2) voie critique par personne — 4 nouveaux inputs optionnels
+      (`critical_push_service_1`/`_2` + `critical_push_notify_entity_1`/`_2`)
+      routent jusqu'à 2 personnes vers le service legacy
+      `notify.mobile_app_xxx`, **seul chemin qui accepte les boutons OUI/Non
+      de la pré-alarme et le bypass du mode silencieux iOS**. Ces deux
+      personnes sont exclues de l'envoi générique pour éviter le doublon.
+      Le nom du service vit dans un helper `input_text`, jamais en dur.
+      **Le test sonore est corrigé aussi**, et ce n'est pas accessoire : il
+      passait par la voie cassée, donc le seul moyen sûr de valider la
+      chaîne était lui-même hors service. Il ne déclenche aucune sirène.
+      Si aucun slot critique n'est configuré, le comportement est celui
+      d'avant ce correctif, en moins cassé : tout part en générique.
     - **16/08/2026 — `continue_on_error: true` sur les 5 appels
       `notify.send_message`.** Sans ça, un seul canal de notification en
       panne (SMTP injoignable, ntfy down, Nabu Casa coupé) fait lever une
@@ -146,6 +176,56 @@ blueprint:
             entity:
               domain: notify
               multiple: true
+
+        critical_push_service_1:
+          name: Critical Push Service — Person 1 (optional)
+          description: >-
+            An input_text helper holding this person's legacy
+            `notify.mobile_app_xxx` service name — e.g. `input_text.legacy_notify_loic`.
+            REQUIRED for the OUI/Non buttons and the iOS critical-alert bypass to work
+            at all: `notify.send_message` cannot carry that payload. Leave empty to skip.
+          default: []
+          selector:
+            entity:
+              filter:
+              - domain: input_text
+              multiple: false
+              reorder: false
+
+        critical_push_notify_entity_1:
+          name: Matching Generic Entity — Person 1 (optional)
+          description: >-
+            The entity from "Alarm Notification Recipients" that the service above
+            replaces, so this person is not notified twice. E.g. `notify.notify_loic`.
+          default: []
+          selector:
+            entity:
+              filter:
+              - domain: notify
+              multiple: false
+              reorder: false
+
+        critical_push_service_2:
+          name: Critical Push Service — Person 2 (optional)
+          description: As above, for a second person. E.g. `input_text.legacy_notify_alina`.
+          default: []
+          selector:
+            entity:
+              filter:
+              - domain: input_text
+              multiple: false
+              reorder: false
+
+        critical_push_notify_entity_2:
+          name: Matching Generic Entity — Person 2 (optional)
+          description: The entity from the list that the service above replaces. E.g. `notify.notify_alina`.
+          default: []
+          selector:
+            entity:
+              filter:
+              - domain: notify
+              multiple: false
+              reorder: false
 
         test__notify_device:
           name: Maintenance Device
@@ -624,6 +704,13 @@ variables:
   test_sensors_dedicated: "{% set data = namespace(entities=[]) %} {% for device in input_smoke_detector_devices %}\n  {% set entity = device_entities(device) | select('match', 'binary_sensor[.].*_test$') | list %}\n  {% set data.entities = data.entities + entity %}\n{% endfor %}\n{{ data.entities }}"
   input_alarm__notify_devices: !input alarm__notify_devices
   input_test__notify_device: !input test__notify_device
+  input_critical_push_service_1: !input critical_push_service_1
+  input_critical_push_notify_entity_1: !input critical_push_notify_entity_1
+  input_critical_push_service_2: !input critical_push_service_2
+  input_critical_push_notify_entity_2: !input critical_push_notify_entity_2
+  critical_slot_1_active: "{{ (input_critical_push_service_1 | default([]) | length > 0)\n   and (input_critical_push_notify_entity_1 | default([]) | length > 0) }}"
+  critical_slot_2_active: "{{ (input_critical_push_service_2 | default([]) | length > 0)\n   and (input_critical_push_notify_entity_2 | default([]) | length > 0) }}"
+  notify_entity_generic: "{% set excluded = (\n     [input_critical_push_notify_entity_1] if critical_slot_1_active else []\n   ) + (\n     [input_critical_push_notify_entity_2] if critical_slot_2_active else []\n   ) %}\n{{ input_alarm__notify_devices | reject('in', excluded) | list }}"
   input_test_start_trigger: !input test_start_trigger
   input_sound_test_trigger: !input sound_test_trigger
   input_critical__enabled: !input critical__enabled
@@ -703,39 +790,111 @@ action:
     - condition: template
       value_template: '{{ trigger is defined and trigger.id == "triggered_sound_test" }}'
     sequence:
-    - action: notify.send_message
+    - alias: >-
+        Voie generique. PAS de bloc 'data' : notify.send_message n'accepte que
+        title et message, tout le reste est rejete par le schema. Voir FIX 04/09/2026.
+      action: notify.send_message
       continue_on_error: true
       target:
-        entity_id: '{{ input_alarm__notify_devices }}'
+        entity_id: '{{ notify_entity_generic }}'
       data:
         title: 'TEST - Pre-Alarm Sound'
         message: 'This is a test of the Pre-Alarm sound configuration.'
+    - alias: >-
+        Voie critique personne 1 : service legacy mobile_app, seul chemin qui
+        accepte les boutons et le payload critique iOS.
+      if:
+      - condition: template
+        value_template: '{{ critical_slot_1_active }}'
+      then:
+      - action: notify.{{ states(input_critical_push_service_1) }}
+        continue_on_error: true
         data:
-          channel: alarm_stream
-          priority: high
-          sound: '{{ prepared_firstalarm_android_sound }}'
-          push:
-            sound:
-              name: '{{ prepared_firstalarm_ios_sound }}'
-              critical: '{{ 1 if input_critical__enabled else 0 }}'
-              volume: '{{ input_ios__critical_volume }}'
+          title: 'TEST - Pre-Alarm Sound'
+          message: 'This is a test of the Pre-Alarm sound configuration.'
+          data:
+            channel: alarm_stream
+            priority: high
+            sound: '{{ prepared_firstalarm_android_sound }}'
+            push:
+              sound:
+                name: '{{ prepared_firstalarm_ios_sound }}'
+                critical: '{{ 1 if input_critical__enabled else 0 }}'
+                volume: '{{ input_ios__critical_volume }}'
+    - alias: >-
+        Voie critique personne 2 : service legacy mobile_app, seul chemin qui
+        accepte les boutons et le payload critique iOS.
+      if:
+      - condition: template
+        value_template: '{{ critical_slot_2_active }}'
+      then:
+      - action: notify.{{ states(input_critical_push_service_2) }}
+        continue_on_error: true
+        data:
+          title: 'TEST - Pre-Alarm Sound'
+          message: 'This is a test of the Pre-Alarm sound configuration.'
+          data:
+            channel: alarm_stream
+            priority: high
+            sound: '{{ prepared_firstalarm_android_sound }}'
+            push:
+              sound:
+                name: '{{ prepared_firstalarm_ios_sound }}'
+                critical: '{{ 1 if input_critical__enabled else 0 }}'
+                volume: '{{ input_ios__critical_volume }}'
     - delay: 5
-    - action: notify.send_message
+    - alias: >-
+        Voie generique. PAS de bloc 'data' : notify.send_message n'accepte que
+        title et message, tout le reste est rejete par le schema. Voir FIX 04/09/2026.
+      action: notify.send_message
       continue_on_error: true
       target:
-        entity_id: '{{ input_alarm__notify_devices }}'
+        entity_id: '{{ notify_entity_generic }}'
       data:
         title: 'TEST - Main Alarm Sound'
         message: 'This is a test of the Main Alarm sound configuration.'
+    - alias: >-
+        Voie critique personne 1 : service legacy mobile_app, seul chemin qui
+        accepte les boutons et le payload critique iOS.
+      if:
+      - condition: template
+        value_template: '{{ critical_slot_1_active }}'
+      then:
+      - action: notify.{{ states(input_critical_push_service_1) }}
+        continue_on_error: true
         data:
-          channel: alarm_stream
-          priority: high
-          sound: '{{ prepared_allalarm_android_sound }}'
-          push:
-            sound:
-              name: '{{ prepared_allalarm_ios_sound }}'
-              critical: '{{ 1 if input_critical__enabled else 0 }}'
-              volume: '{{ input_ios__critical_volume }}'
+          title: 'TEST - Main Alarm Sound'
+          message: 'This is a test of the Main Alarm sound configuration.'
+          data:
+            channel: alarm_stream
+            priority: high
+            sound: '{{ prepared_allalarm_android_sound }}'
+            push:
+              sound:
+                name: '{{ prepared_allalarm_ios_sound }}'
+                critical: '{{ 1 if input_critical__enabled else 0 }}'
+                volume: '{{ input_ios__critical_volume }}'
+    - alias: >-
+        Voie critique personne 2 : service legacy mobile_app, seul chemin qui
+        accepte les boutons et le payload critique iOS.
+      if:
+      - condition: template
+        value_template: '{{ critical_slot_2_active }}'
+      then:
+      - action: notify.{{ states(input_critical_push_service_2) }}
+        continue_on_error: true
+        data:
+          title: 'TEST - Main Alarm Sound'
+          message: 'This is a test of the Main Alarm sound configuration.'
+          data:
+            channel: alarm_stream
+            priority: high
+            sound: '{{ prepared_allalarm_android_sound }}'
+            push:
+              sound:
+                name: '{{ prepared_allalarm_ios_sound }}'
+                critical: '{{ 1 if input_critical__enabled else 0 }}'
+                volume: '{{ input_ios__critical_volume }}'
     - stop: "Sound test completed. Sirens will not ring."
 
 - parallel:
@@ -771,29 +930,72 @@ action:
               - condition: template
                 value_template: '{{ tries < max_tries }}'
               sequence:
-              - action: notify.send_message
+              - alias: >-
+                  Voie generique. PAS de bloc 'data' : notify.send_message n'accepte que
+                  title et message, tout le reste est rejete par le schema. Voir FIX 04/09/2026.
+                action: notify.send_message
                 continue_on_error: true
                 target:
-                  entity_id: '{{ input_alarm__notify_devices }}'
+                  entity_id: '{{ notify_entity_generic }}'
                 data:
                   title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ input_firstalarm__notify_title }}'
                   message: '{{ input_firstalarm__notify_message }}'
+              - alias: >-
+                  Voie critique personne 1 : service legacy mobile_app, seul chemin qui
+                  accepte les boutons et le payload critique iOS.
+                if:
+                - condition: template
+                  value_template: '{{ critical_slot_1_active }}'
+                then:
+                - action: notify.{{ states(input_critical_push_service_1) }}
+                  continue_on_error: true
                   data:
-                    tag: '{{ tag_alarm }}'
-                    channel: alarm_stream
-                    priority: high
-                    ttl: 0
-                    sound: '{{ prepared_firstalarm_android_sound }}'
-                    push:
-                      sound:
-                        name: '{{ prepared_firstalarm_ios_sound }}'
-                        critical: '{{ 1 if input_critical__enabled else 0 }}'
-                        volume: '{{ input_ios__critical_volume }}'
-                    actions:
-                    - action: '{{ action_fire_confirm }}'
-                      title: '{{ input_firstalarm__notify_button_fire }}'
-                    - action: '{{ action_fire_false }}'
-                      title: '{{ input_firstalarm__notify_button_nofire }}'
+                    title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ input_firstalarm__notify_title }}'
+                    message: '{{ input_firstalarm__notify_message }}'
+                    data:
+                      tag: '{{ tag_alarm }}'
+                      channel: alarm_stream
+                      priority: high
+                      ttl: 0
+                      sound: '{{ prepared_firstalarm_android_sound }}'
+                      push:
+                        sound:
+                          name: '{{ prepared_firstalarm_ios_sound }}'
+                          critical: '{{ 1 if input_critical__enabled else 0 }}'
+                          volume: '{{ input_ios__critical_volume }}'
+                      actions:
+                      - action: '{{ action_fire_confirm }}'
+                        title: '{{ input_firstalarm__notify_button_fire }}'
+                      - action: '{{ action_fire_false }}'
+                        title: '{{ input_firstalarm__notify_button_nofire }}'
+              - alias: >-
+                  Voie critique personne 2 : service legacy mobile_app, seul chemin qui
+                  accepte les boutons et le payload critique iOS.
+                if:
+                - condition: template
+                  value_template: '{{ critical_slot_2_active }}'
+                then:
+                - action: notify.{{ states(input_critical_push_service_2) }}
+                  continue_on_error: true
+                  data:
+                    title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ input_firstalarm__notify_title }}'
+                    message: '{{ input_firstalarm__notify_message }}'
+                    data:
+                      tag: '{{ tag_alarm }}'
+                      channel: alarm_stream
+                      priority: high
+                      ttl: 0
+                      sound: '{{ prepared_firstalarm_android_sound }}'
+                      push:
+                        sound:
+                          name: '{{ prepared_firstalarm_ios_sound }}'
+                          critical: '{{ 1 if input_critical__enabled else 0 }}'
+                          volume: '{{ input_ios__critical_volume }}'
+                      actions:
+                      - action: '{{ action_fire_confirm }}'
+                        title: '{{ input_firstalarm__notify_button_fire }}'
+                      - action: '{{ action_fire_false }}'
+                        title: '{{ input_firstalarm__notify_button_nofire }}'
               - wait_for_trigger:
                 - platform: event
                   event_type: mobile_app_notification_action
@@ -1183,29 +1385,72 @@ action:
           act_dismiss: DISMISS_{{ context.id }}
           tries_alarm: 0
           max_tries_alarm: 5
-      - action: notify.send_message
+      - alias: >-
+          Voie generique. PAS de bloc 'data' : notify.send_message n'accepte que
+          title et message, tout le reste est rejete par le schema. Voir FIX 04/09/2026.
+        action: notify.send_message
         continue_on_error: true
         target:
-          entity_id: '{{ input_alarm__notify_devices }}'
+          entity_id: '{{ notify_entity_generic }}'
         data:
           title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ prepared_allalarm_notify_title }}'
           message: '{{ prepared_allalarm_notify_message }}'
+      - alias: >-
+          Voie critique personne 1 : service legacy mobile_app, seul chemin qui
+          accepte les boutons et le payload critique iOS.
+        if:
+        - condition: template
+          value_template: '{{ critical_slot_1_active }}'
+        then:
+        - action: notify.{{ states(input_critical_push_service_1) }}
+          continue_on_error: true
           data:
-            tag: '{{ tag_alarm }}'
-            channel: alarm_stream
-            priority: high
-            ttl: 0
-            sound: '{{ prepared_allalarm_android_sound }}'
-            push:
-              sound:
-                name: '{{ prepared_allalarm_ios_sound }}'
-                critical: '{{ 1 if input_critical__enabled else 0 }}'
-                volume: '{{ input_ios__critical_volume }}'
-            actions:
-            - action: '{{ act_dismiss }}'
-              title: '{{ input_allalarm__notify_button_deletenotification }}'
-            - action: '{{ act_mute }}'
-              title: '{{ input_allalarm__notify_button_mutealarm }}'
+            title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ prepared_allalarm_notify_title }}'
+            message: '{{ prepared_allalarm_notify_message }}'
+            data:
+              tag: '{{ tag_alarm }}'
+              channel: alarm_stream
+              priority: high
+              ttl: 0
+              sound: '{{ prepared_allalarm_android_sound }}'
+              push:
+                sound:
+                  name: '{{ prepared_allalarm_ios_sound }}'
+                  critical: '{{ 1 if input_critical__enabled else 0 }}'
+                  volume: '{{ input_ios__critical_volume }}'
+              actions:
+              - action: '{{ act_dismiss }}'
+                title: '{{ input_allalarm__notify_button_deletenotification }}'
+              - action: '{{ act_mute }}'
+                title: '{{ input_allalarm__notify_button_mutealarm }}'
+      - alias: >-
+          Voie critique personne 2 : service legacy mobile_app, seul chemin qui
+          accepte les boutons et le payload critique iOS.
+        if:
+        - condition: template
+          value_template: '{{ critical_slot_2_active }}'
+        then:
+        - action: notify.{{ states(input_critical_push_service_2) }}
+          continue_on_error: true
+          data:
+            title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ prepared_allalarm_notify_title }}'
+            message: '{{ prepared_allalarm_notify_message }}'
+            data:
+              tag: '{{ tag_alarm }}'
+              channel: alarm_stream
+              priority: high
+              ttl: 0
+              sound: '{{ prepared_allalarm_android_sound }}'
+              push:
+                sound:
+                  name: '{{ prepared_allalarm_ios_sound }}'
+                  critical: '{{ 1 if input_critical__enabled else 0 }}'
+                  volume: '{{ input_ios__critical_volume }}'
+              actions:
+              - action: '{{ act_dismiss }}'
+                title: '{{ input_allalarm__notify_button_deletenotification }}'
+              - action: '{{ act_mute }}'
+                title: '{{ input_allalarm__notify_button_mutealarm }}'
       - repeat:
           while:
           - condition: template
@@ -1244,29 +1489,72 @@ action:
               sequence:
               - variables:
                   tries_alarm: '{{ tries_alarm + 1 }}'
-              - action: notify.send_message
+              - alias: >-
+                  Voie generique. PAS de bloc 'data' : notify.send_message n'accepte que
+                  title et message, tout le reste est rejete par le schema. Voir FIX 04/09/2026.
+                action: notify.send_message
                 continue_on_error: true
                 target:
-                  entity_id: '{{ input_alarm__notify_devices }}'
+                  entity_id: '{{ notify_entity_generic }}'
                 data:
                   title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ prepared_allalarm_notify_title }}'
                   message: '{{ prepared_allalarm_notify_message }}'
+              - alias: >-
+                  Voie critique personne 1 : service legacy mobile_app, seul chemin qui
+                  accepte les boutons et le payload critique iOS.
+                if:
+                - condition: template
+                  value_template: '{{ critical_slot_1_active }}'
+                then:
+                - action: notify.{{ states(input_critical_push_service_1) }}
+                  continue_on_error: true
                   data:
-                    tag: '{{ tag_alarm }}'
-                    channel: alarm_stream
-                    priority: high
-                    ttl: 0
-                    sound: '{{ prepared_allalarm_android_sound }}'
-                    push:
-                      sound:
-                        name: '{{ prepared_allalarm_ios_sound }}'
-                        critical: '{{ 1 if input_critical__enabled else 0 }}'
-                        volume: '{{ input_ios__critical_volume }}'
-                    actions:
-                    - action: '{{ act_dismiss }}'
-                      title: '{{ input_allalarm__notify_button_deletenotification }}'
-                    - action: '{{ act_mute }}'
-                      title: '{{ input_allalarm__notify_button_mutealarm }}'
+                    title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ prepared_allalarm_notify_title }}'
+                    message: '{{ prepared_allalarm_notify_message }}'
+                    data:
+                      tag: '{{ tag_alarm }}'
+                      channel: alarm_stream
+                      priority: high
+                      ttl: 0
+                      sound: '{{ prepared_allalarm_android_sound }}'
+                      push:
+                        sound:
+                          name: '{{ prepared_allalarm_ios_sound }}'
+                          critical: '{{ 1 if input_critical__enabled else 0 }}'
+                          volume: '{{ input_ios__critical_volume }}'
+                      actions:
+                      - action: '{{ act_dismiss }}'
+                        title: '{{ input_allalarm__notify_button_deletenotification }}'
+                      - action: '{{ act_mute }}'
+                        title: '{{ input_allalarm__notify_button_mutealarm }}'
+              - alias: >-
+                  Voie critique personne 2 : service legacy mobile_app, seul chemin qui
+                  accepte les boutons et le payload critique iOS.
+                if:
+                - condition: template
+                  value_template: '{{ critical_slot_2_active }}'
+                then:
+                - action: notify.{{ states(input_critical_push_service_2) }}
+                  continue_on_error: true
+                  data:
+                    title: '{{ realfire__areas_smoke_detected ~ '' - '' ~ prepared_allalarm_notify_title }}'
+                    message: '{{ prepared_allalarm_notify_message }}'
+                    data:
+                      tag: '{{ tag_alarm }}'
+                      channel: alarm_stream
+                      priority: high
+                      ttl: 0
+                      sound: '{{ prepared_allalarm_android_sound }}'
+                      push:
+                        sound:
+                          name: '{{ prepared_allalarm_ios_sound }}'
+                          critical: '{{ 1 if input_critical__enabled else 0 }}'
+                          volume: '{{ input_ios__critical_volume }}'
+                      actions:
+                      - action: '{{ act_dismiss }}'
+                        title: '{{ input_allalarm__notify_button_deletenotification }}'
+                      - action: '{{ act_mute }}'
+                        title: '{{ input_allalarm__notify_button_mutealarm }}'
       - if: '{{ wait.trigger and (wait.trigger.id == "physical_mute" or wait.trigger.id == "smoke_cleared" or (wait.trigger.platform == "event" and wait.trigger.event.event_type == "mobile_app_notification_action" and wait.trigger.event.data.action == act_mute)) }}'
         then:
         - variables:
