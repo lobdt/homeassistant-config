@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.7**
+    **Version: 5.8**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,53 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.8 :** correctif — **la boucle de rappel ne pouvait pas
+    tourner. Le watchdog de l'automation tuait sa propre alerte.**
+
+    `mode: restart` + un trigger `time_pattern` (`watchdog_periodic`) sont
+    incompatibles : chaque tick du watchdog redémarre l'automation, donc
+    **annule la boucle `repeat` en vol**. Concrètement, une alerte frigo à
+    26 °C envoyait sa première notification puis se taisait définitivement
+    au tick suivant — 15 min plus tard sur l'instance frigo, 30 min sur la
+    cave. La répétition, qui est la raison d'être de ce blueprint, n'a
+    jamais pu fonctionner sur AUCUNE des trois instances de sécurité
+    (frigo, congélateur, fuite cave). Trouvé par un audit externe le
+    03/09/2026 (constat 03).
+
+    **Correctif : `mode: parallel` (`max: 10`).** Le tick du watchdog
+    ouvre désormais son propre run et laisse la boucle d'alerte vivre.
+
+    **Ce que ce changement implique, à lire avant d'ajouter un capteur :**
+
+    Avec `restart`, il ne pouvait exister qu'une boucle de rappel à la
+    fois — c'était sa seule vertu. Avec `parallel`, deux déclenchements
+    d'alerte successifs sans retour à la normale entre les deux ouvrent
+    deux boucles, donc deux notifications par intervalle.
+
+    **Sur une instance à UN SEUL capteur, ce cas est impossible par
+    construction** : un trigger `numeric_state`/`state` ne se redéclenche
+    qu'après un franchissement inverse, et ce franchissement inverse est
+    précisément ce qui déclenche `resolved_*`, ce qui termine la boucle.
+    Les trois instances existantes sont dans ce cas — vérifié le
+    04/09/2026, un capteur chacune.
+
+    **Sur une instance à PLUSIEURS capteurs, le cas devient possible** :
+    capteur A franchit le seuil (boucle 1), puis capteur B le franchit à
+    son tour avant que A ne redescende (boucle 2). Les deux boucles
+    notifient. Si vous surveillez plusieurs capteurs dans une même
+    instance, sachez-le — ou séparez en une instance par capteur, ce que
+    l'avertissement sur la politique de destinataires ci-dessus
+    recommande déjà pour d'autres raisons.
+
+    Pourquoi pas un verrou `input_boolean` pour couvrir ce cas : un
+    verrou qui reste bloqué à `on` (capteur qui part en `unavailable`
+    sans jamais repasser sous le seuil, donc sans `resolved_*`) rendrait
+    l'instance définitivement muette. Sur une alerte de sécurité, un
+    doublon vaut mieux qu'un silence.
+
+    Pourquoi pas `queued` : le run watchdog attendrait la fin de la
+    boucle d'alerte, qui peut durer des heures.
 
     **Changelog v5.7 :** correctif de fiabilité — **un seul canal de
     notification en panne cassait toute la chaîne d'alerte.** Les 5 appels
@@ -809,4 +856,10 @@ action:
                   continue_on_error: true
     alias: "Auto-reparation : recharge l'integration proprietaire avant que le watchdog n'alerte (opt-in, defaut false)"
 
-mode: restart
+# v5.8 : parallel, PAS restart. Avec restart, chaque tick du trigger
+# time_pattern du watchdog redemarrait l'automation et tuait la boucle
+# repeat de rappel en vol -- la repetition d'alerte n'a jamais pu
+# fonctionner. Voir le changelog v5.8 pour le compromis assume sur les
+# instances multi-capteurs.
+mode: parallel
+max: 10
