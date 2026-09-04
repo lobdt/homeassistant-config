@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.9**
+    **Version: 5.10**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,49 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.10 :** correctif — **les messages affichaient une valeur
+    périmée.** Régression introduite par la v5.9, trouvée par un banc de test
+    puis confirmée en production le 04/09/2026 à 21:50.
+
+    Un bloc `variables:` est rendu **une seule fois, au démarrage du run**.
+    Avant la v5.9, le retour à la normale était son propre run, démarré au
+    moment du retour : `resolved_message` se rendait alors avec la valeur
+    courante. Depuis la v5.9 il vit dans le run d'alerte, démarré parfois
+    plusieurs heures plus tôt — la valeur restait donc **figée à celle de
+    l'alerte**.
+
+    Cas réel du 04/09 : le frigo dépasse 7 °C pendant plus de 10 min, l'alerte
+    part légitimement à 21:45:36 (« Frigo à 7.5°C »). À 21:50:23 la température
+    redescend à 6,7 °C et le retour à la normale annonce… « Frigo à 7.5°C ».
+    Le message disait « revenu à la normale » en affichant la valeur anormale.
+
+    **Le même défaut existait sur les rappels, et lui n'est pas une
+    régression** : la boucle a toujours vécu dans le run d'alerte, donc un
+    rappel a toujours affiché la valeur du moment de l'alerte, jamais la
+    valeur courante. Un frigo passé de 26 à 30 °C aurait continué d'annoncer
+    26 °C toutes les 15 min. Corrigé en même temps.
+
+    **Correctif : `message: !input alert_message` au lieu de
+    `message: "{{ alert_message }}"`**, et de même pour les trois autres
+    champs de texte de la branche d'alerte.
+
+    `!input` est une substitution **textuelle** au chargement du blueprint :
+    le template brut atterrit directement dans le `data:` de l'action, et
+    Home Assistant rend les `data:` d'action **à l'exécution**. La valeur
+    redevient celle du moment où le message part.
+
+    **À ne pas confondre avec le piège inverse**, documenté sur
+    `fire_smoke_critical_alert.yaml` : là-bas un `{{ }}` écrit dans un champ
+    d'instance s'affichait littéralement, parce que le texte traversait
+    `!input` **puis** une variable — et Jinja ne réévalue pas le résultat d'un
+    rendu. C'est la **double indirection** qui casse le re-rendu, jamais le
+    `!input` seul. Un `!input` posé directement dans un `data:` se rend
+    normalement, à l'exécution.
+
+    Les messages du watchdog ne sont pas touchés : ils partent dans leur
+    propre run, déclenché au moment où ils sont émis, donc leur valeur était
+    déjà juste.
 
     **Changelog v5.9 :** correctif — **« retour à la normale » était envoyé
     pour des alertes qui n'avaient jamais été émises.**
@@ -721,8 +764,8 @@ action:
           target:
             entity_id: "{{ notify_entity_generic }}"
           data:
-            title: "{{ alert_title }}"
-            message: "{{ alert_message }}"
+            title: !input alert_title
+            message: !input alert_message
 
         # Chemin critique par personne — voir note technique sur
         # critical_push_service_1/2 plus haut. Templated service name
@@ -735,8 +778,8 @@ action:
           then:
             - action: "notify.{{ states(critical_push_service_1) }}"
               data:
-                title: "{{ alert_title }}"
-                message: "{{ alert_message }}"
+                title: !input alert_title
+                message: !input alert_message
                 data: "{{ notify_data }}"
               continue_on_error: true
         - if:
@@ -745,8 +788,8 @@ action:
           then:
             - action: "notify.{{ states(critical_push_service_2) }}"
               data:
-                title: "{{ alert_title }}"
-                message: "{{ alert_message }}"
+                title: !input alert_title
+                message: !input alert_message
                 data: "{{ notify_data }}"
               continue_on_error: true
 
@@ -802,8 +845,8 @@ action:
                     target:
                       entity_id: "{{ notify_entity_generic }}"
                     data:
-                      title: "{{ alert_title }}"
-                      message: "{{ alert_message }}"
+                      title: !input alert_title
+                      message: !input alert_message
 
                   - if:
                       - condition: template
@@ -811,8 +854,8 @@ action:
                     then:
                       - action: "notify.{{ states(critical_push_service_1) }}"
                         data:
-                          title: "{{ alert_title }}"
-                          message: "{{ alert_message }}"
+                          title: !input alert_title
+                          message: !input alert_message
                           data: "{{ notify_data }}"
                         continue_on_error: true
                   - if:
@@ -821,8 +864,8 @@ action:
                     then:
                       - action: "notify.{{ states(critical_push_service_2) }}"
                         data:
-                          title: "{{ alert_title }}"
-                          message: "{{ alert_message }}"
+                          title: !input alert_title
+                          message: !input alert_message
                           data: "{{ notify_data }}"
                         continue_on_error: true
 
@@ -851,8 +894,8 @@ action:
               target:
                 entity_id: !input notify_entity
               data:
-                title: "{{ resolved_title }}"
-                message: "{{ resolved_message }}"
+                title: !input resolved_title
+                message: !input resolved_message
 
     # ── Capteur unavailable/unknown ───────────────────────────────────────
     - conditions:
