@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.8**
+    **Version: 5.9**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,70 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.9 :** correctif — **« retour à la normale » était envoyé
+    pour des alertes qui n'avaient jamais été émises.**
+
+    La branche de résolution se déclenchait sur `resolved_numeric` /
+    `resolved_state`, deux déclencheurs sans `for:` et surtout **sans aucune
+    mémoire d'une alerte précédente**. N'importe quel franchissement
+    descendant du seuil suffisait.
+
+    Cas réel, nuit du 03/09/2026 : le frigo passe à 7,3 °C à 02:06:01,
+    redescend à 6,7 °C à 02:13:54 — 7 min 53 au-dessus du seuil, donc moins
+    que le délai de confirmation de 10 min, donc **aucune alerte**, ce qui
+    est le comportement voulu. Et pourtant à 02:13:55, deux téléphones
+    sonnent, un email part et le topic ntfy d'urgence délivre un
+    « ✅ Frigo revenu à la normale ». Trois nuits sur quatre, entre 02h et
+    05h30, sur le cycle de dégivrage. Trouvé par un audit externe le
+    03/09/2026 (constat 05).
+
+    **Ce qui a été écarté d'emblée** : allonger le délai de confirmation ne
+    change rien — ce délai n'existe que sur les déclencheurs d'alerte, pas
+    sur ceux de résolution. Et vider `resolved_title` supprimerait aussi la
+    résolution légitime après une vraie alerte.
+
+    **Correctif : le retour à la normale est désormais émis par le run qui a
+    envoyé l'alerte**, à la sortie de sa boucle de rappel. Cette boucle ne
+    sort que lorsque plus aucun capteur n'est en alerte : on est donc, par
+    construction, dans le seul cas où l'annonce a un sens — une alerte a été
+    envoyée, et elle est terminée.
+
+    Les déclencheurs `resolved_numeric` / `resolved_state` et leur branche
+    sont **supprimés**. Les mêmes évènements restent captés, inline, par le
+    `wait_for_trigger` de la boucle : même signal, mais lu par le run qui a
+    le contexte.
+
+    **Aucun helper, aucun drapeau.** Un `input_boolean` « alerte en cours »
+    aurait marché, mais il ajoute un état externe à armer, à désarmer, et
+    qui peut rester bloqué après un redémarrage. Ici il n'y a rien à
+    synchroniser : l'information « une alerte a été envoyée » est le run
+    lui-même.
+
+    Trois ajustements qu'imposait ce déplacement :
+
+    - la garde `repeat_seconds > 0` quitte le `while` et passe dans le `if`
+      interne. La boucle doit tourner même quand la répétition est coupée,
+      sinon le run se termine avant d'avoir vu la résolution ; c'est le `if`
+      qui décide d'envoyer un rappel ou non ;
+    - le `timeout` du `wait_for_trigger` passe en secondes, avec un repli à
+      24 h quand la répétition est coupée ;
+    - la `condition:` qui suivait l'attente devient un `if`. Une `condition:`
+      fausse arrête **tout le script** — c'était la seule sortie de boucle,
+      et c'est précisément ce qui rendait impossible d'ajouter quoi que ce
+      soit après elle.
+
+    **Garde `has_value`** : la boucle sort aussi quand un capteur part en
+    `unavailable`, puisque `map('float', -1000000)` le place sous le seuil.
+    Sans garde, on enverrait un rassurant « tout va bien » sur un capteur
+    silencieux. C'est l'équivalent de la garde ajoutée en v4.1 sur
+    l'ancienne branche.
+
+    **Ce qu'on perd, assumé** : si Home Assistant redémarre pendant une
+    alerte, le run meurt et la résolution ne sera jamais annoncée. Avant, le
+    déclencheur séparé l'aurait envoyée. C'est acceptable — un redémarrage
+    tuait déjà la boucle de rappel, et un message de confort manquant est
+    bien moins grave qu'une fausse alerte de nuit.
 
     **Changelog v5.8 :** correctif — **la boucle de rappel ne pouvait pas
     tourner. Le watchdog de l'automation tuait sa propre alerte.**
@@ -603,17 +667,13 @@ trigger:
     for: !input confirmation_delay
     id: alert_state
 
-  # Trigger retour à la normale — numérique repasse sous le seuil
-  - trigger: numeric_state
-    entity_id: !input numeric_entity
-    below: !input numeric_above
-    id: resolved_numeric
-
-  # Trigger retour à la normale — état quitte l'état déclencheur
-  - trigger: state
-    entity_id: !input state_entity
-    from: !input alert_state
-    id: resolved_state
+  # v5.9 : les declencheurs resolved_numeric / resolved_state ont ete
+  # SUPPRIMES, ainsi que leur branche. Le retour a la normale est desormais
+  # emis par le run qui a envoye l'alerte, a la sortie de sa boucle de
+  # rappel. Un declencheur separe ne pouvait pas savoir si une alerte avait
+  # precede : il annoncait "tout va bien" pour des alertes jamais emises.
+  # Les memes evenements restent captes, inline, par le wait_for_trigger de
+  # la boucle -- meme signal, mais lu par le run qui a le contexte.
 
   # Trigger capteur unavailable/unknown
   - trigger: state
@@ -691,9 +751,13 @@ action:
               continue_on_error: true
 
         - repeat:
+            # v5.9 : la garde "repeat_seconds > 0" a ete retiree d'ici. La
+            # boucle doit tourner meme quand la repetition est coupee, sinon
+            # le run se termine avant d'avoir vu le retour a la normale --
+            # et c'est lui, desormais, qui doit l'annoncer. La repetition
+            # reste desactivable : c'est le if interne qui decide d'envoyer
+            # un rappel ou non.
             while:
-              - condition: template
-                value_template: "{{ repeat_seconds > 0 }}"
               - condition: template
                 value_template: >
                   {% if numeric_list | length > 0 %}
@@ -710,78 +774,85 @@ action:
                   - trigger: state
                     entity_id: !input state_entity
                     from: !input alert_state
-                timeout: !input repeat_interval
+                # v5.9 : exprime en secondes au lieu de !input repeat_interval,
+                # pour pouvoir retomber sur 24h quand la repetition est coupee.
+                # La boucle attend alors la resolution sans rien envoyer.
+                timeout: "{{ repeat_seconds if repeat_seconds > 0 else 86400 }}"
                 continue_on_timeout: true
-              - condition: template
-                value_template: >
-                  {% if numeric_list | length > 0 %}
-                    {{ numeric_list | map('states') | map('float', -1000000)
-                       | select('gt', numeric_above | float(0)) | list | length > 0 }}
-                  {% else %}
-                    {{ state_list | select('is_state', alert_state) | list | length > 0 }}
-                  {% endif %}
-              - action: notify.send_message
-                continue_on_error: true
-                target:
-                  entity_id: "{{ notify_entity_generic }}"
-                data:
-                  title: "{{ alert_title }}"
-                  message: "{{ alert_message }}"
-
+              # v5.9 : un if, PAS un condition. Un condition faux arretait
+              # TOUT le script -- c'etait la seule sortie de boucle, et c'est
+              # ce qui rendait impossible d'ajouter quoi que ce soit apres.
+              # Avec un if, la sequence se termine normalement, le while se
+              # reevalue, la boucle sort proprement, et le run atteint enfin
+              # le retour a la normale.
               - if:
                   - condition: template
-                    value_template: "{{ critical_slot_1_active }}"
+                    value_template: "{{ repeat_seconds > 0 }}"
+                  - condition: template
+                    value_template: >
+                      {% if numeric_list | length > 0 %}
+                        {{ numeric_list | map('states') | map('float', -1000000)
+                           | select('gt', numeric_above | float(0)) | list | length > 0 }}
+                      {% else %}
+                        {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+                      {% endif %}
                 then:
-                  - action: "notify.{{ states(critical_push_service_1) }}"
+                  - action: notify.send_message
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ notify_entity_generic }}"
                     data:
                       title: "{{ alert_title }}"
                       message: "{{ alert_message }}"
-                      data: "{{ notify_data }}"
-                    continue_on_error: true
-              - if:
-                  - condition: template
-                    value_template: "{{ critical_slot_2_active }}"
-                then:
-                  - action: "notify.{{ states(critical_push_service_2) }}"
-                    data:
-                      title: "{{ alert_title }}"
-                      message: "{{ alert_message }}"
-                      data: "{{ notify_data }}"
-                    continue_on_error: true
 
-    # ── Retour à la normale ───────────────────────────────────────────────
-    # v4.1 : garde ajoutée — ignore les faux positifs quand l'état précédent
-    # était unavailable/unknown (ex: reconnexion MQTT après reboot HA),
-    # au lieu d'une vraie sortie d'alerte.
-    # v5.0 : n'envoie qu'une fois TOUS les capteurs surveillés revenus a la
-    # normale (pas des qu'un seul d'entre eux l'est, s'il y en a plusieurs).
-    - conditions:
-        - condition: trigger
-          id:
-            - resolved_numeric
-            - resolved_state
-        - condition: template
-          value_template: "{{ resolved_title | length > 0 }}"
-        - condition: template
-          value_template: >
-            {{ trigger.from_state is not none and
-               trigger.from_state.state not in ['unavailable', 'unknown', 'none'] }}
-        - condition: template
-          value_template: >
-            {% if numeric_list | length > 0 %}
-              {{ numeric_list | map('states') | map('float', -1000000)
-                 | select('gt', numeric_above | float(0)) | list | length == 0 }}
-            {% else %}
-              {{ state_list | select('is_state', alert_state) | list | length == 0 }}
-            {% endif %}
-      sequence:
-        - action: notify.send_message
-          continue_on_error: true
-          target:
-            entity_id: !input notify_entity
-          data:
-            title: "{{ resolved_title }}"
-            message: "{{ resolved_message }}"
+                  - if:
+                      - condition: template
+                        value_template: "{{ critical_slot_1_active }}"
+                    then:
+                      - action: "notify.{{ states(critical_push_service_1) }}"
+                        data:
+                          title: "{{ alert_title }}"
+                          message: "{{ alert_message }}"
+                          data: "{{ notify_data }}"
+                        continue_on_error: true
+                  - if:
+                      - condition: template
+                        value_template: "{{ critical_slot_2_active }}"
+                    then:
+                      - action: "notify.{{ states(critical_push_service_2) }}"
+                        data:
+                          title: "{{ alert_title }}"
+                          message: "{{ alert_message }}"
+                          data: "{{ notify_data }}"
+                        continue_on_error: true
+
+        # ── Retour à la normale — émis par le run qui a alerté (v5.9) ──────
+        # La boucle ci-dessus ne sort QUE lorsque plus aucun capteur n'est en
+        # alerte. On est donc, par construction, dans le seul cas ou un retour
+        # a la normale a un sens : une alerte a bien ete envoyee, et elle est
+        # terminee. Aucun helper, aucun drapeau a armer ni a remettre a zero,
+        # rien qui puisse rester bloque : c'est le meme run qui a alerte qui
+        # annonce la fin.
+        #
+        # La garde has_value distingue "repasse sous le seuil" de "le capteur
+        # est mort". Sans elle, un capteur qui part en unavailable fait sortir
+        # la boucle (map('float', -1000000) le place sous le seuil) et on
+        # enverrait un rassurant "tout va bien" sur un capteur silencieux.
+        # C'est l'equivalent de la garde v4.1 de l'ancienne branche.
+        - if:
+            - condition: template
+              value_template: >
+                {{ resolved_title | length > 0
+                   and watched_entities | select('has_value') | list | length
+                       == watched_entities | length }}
+          then:
+            - action: notify.send_message
+              continue_on_error: true
+              target:
+                entity_id: !input notify_entity
+              data:
+                title: "{{ resolved_title }}"
+                message: "{{ resolved_message }}"
 
     # ── Capteur unavailable/unknown ───────────────────────────────────────
     - conditions:
