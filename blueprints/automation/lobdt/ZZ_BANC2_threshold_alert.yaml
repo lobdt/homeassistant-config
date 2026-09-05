@@ -1,0 +1,1112 @@
+blueprint:
+  name: ZZ BANC2 - Threshold Alert (jetable)
+  description: >
+    # 🔔 Threshold Alert & Repeat
+
+    **Version: 5.12-banc** — COPIE JETABLE, NE PAS INSTANCIER EN PRODUCTION
+
+
+    Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
+    un seuil ou sont dans un état indésirable. Notifie aussi quand le
+    problème est résolu. Détecte aussi si un capteur ne répond plus.
+
+
+    **Cas d'usage typiques :**
+    - Frigo / congélateur trop chaud (numérique)
+    - Détecteur d'inondation / fuite d'eau (état binaire)
+    - Capteur CO₂ trop élevé (numérique)
+    - Porte ouverte trop longtemps (état binaire)
+
+
+    **⚠️ Une seule politique de destinataires par instance :**
+
+    Le champ "Capteur(s)" accepte plusieurs entités — mais ne regroupez
+    ensemble dans une même instance QUE des capteurs qui doivent notifier
+    EXACTEMENT les mêmes personnes. Un capteur dont l'alerte doit aussi
+    aller à des tiers externes (ex : voisins pour un risque bâtiment) ne
+    doit jamais partager une instance avec un capteur privé — sinon le
+    capteur privé hérite silencieusement des mêmes destinataires externes.
+    En cas de doute, une instance séparée par capteur reste le choix sûr.
+
+
+    **Fonctionnement :**
+
+    1. Remplis soit **Entité(s) numérique(s)** soit **Entité(s) état**
+       (pas les deux).
+    2. Le trigger se déclenche quand le seuil/état est atteint pendant le
+       délai de confirmation, sur n'importe lequel des capteurs choisis.
+    3. La notification d'alerte est envoyée (avec le nom du capteur
+       déclencheur inclus par défaut), puis répétée à intervalle régulier
+       tant qu'AU MOINS UN des capteurs reste en alerte.
+    4. Quand TOUS les capteurs sont revenus à la normale, une notification
+       de retour à la normale est envoyée.
+    5. Si un capteur ne répond plus (unavailable ou données trop
+       anciennes), une notification dédiée est envoyée.
+
+
+    **Changelog v5.11 :** correctif — **apres un redemarrage de Home
+    Assistant, une alerte en cours ne repartait JAMAIS.**
+
+    Ce n'est pas une regression des versions precedentes : le defaut est dans
+    le declencheur `numeric_state` de Home Assistant lui-meme, et il existait
+    depuis toujours.
+
+    Un declencheur `numeric_state` doit **observer la valeur du cote
+    non-declenchant pour s'armer**. Au redemarrage il la voit deja au-dessus du
+    seuil, ne s'arme jamais, et ne declenche plus. Meme chose pour un `state`
+    avec `from`/`to` explicites.
+
+    **Consequence** : si HA redemarre pendant qu'un frigo est a 26 °C, plus
+    aucune alerte ne part — jamais — jusqu'a ce que la temperature redescende
+    sous le seuil puis remonte. Sur un compresseur en panne, elle ne
+    redescendra pas.
+
+    **Mesure au banc du 05/09/2026, avec contre-epreuve :**
+
+    ```
+    12:40:23,755   alerte, run demarre
+    12:42:25,346   execution: "cancelled"      <- le redemarrage tue le run
+    12:43:42,964   HA restaure les etats, valeur toujours au-dessus du seuil
+    12:47:52       +251 s : aucun nouveau run
+    ---            contre-epreuve : valeur descendue puis remontee
+    12:48:39,145   nouveau run, 30 s apres     <- l'automation est vivante
+    ```
+
+    La contre-epreuve est la partie essentielle : sans elle, « rien ne s'est
+    declenche » et « l'automation est cassee » sont indiscernables.
+
+    **Correctif : un declencheur `homeassistant: start`**, accepte par la
+    branche d'alerte existante — une seule sequence, deux portes d'entree,
+    plutot qu'une branche dupliquee.
+
+    Deux ajouts l'accompagnent :
+
+    - une **condition** « au moins un capteur hors seuil » sur la branche. Au
+      demarrage le declencheur ne porte aucune information sur les capteurs,
+      il faut le verifier explicitement. Sur `alert_numeric` / `alert_state`
+      elle est vraie par construction — le `for:` vient de la garantir — donc
+      elle ne change rien pour eux ;
+    - un **`if` en tete de sequence** qui rejoue le delai de confirmation
+      quand le declencheur est `demarrage`, puis reconfirme. Sur les autres
+      declencheurs le bloc est saute et n'ajoute aucun delai.
+
+    **Trois compromis assumes :**
+
+    **Le delai est rejoue en entier.** Un redemarrage remet a zero le compteur
+    `for:` de tous les declencheurs — comportement natif de HA. Si HA redemarre
+    alors que le frigo est au-dessus du seuil depuis 20 min, la reprise repart
+    sur le delai complet. C'est le prix a payer pour ne pas faire sonner tous
+    les canaux a chaque reboot sur un capteur momentanement hors seuil ;
+    alerter immediatement recreerait le bruit que la v5.9 a supprime.
+
+    **Le doublon reste possible.** Si le capteur oscille apres le demarrage, le
+    declencheur normal s'arme et peut lancer une seconde boucle a cote de celle
+    de la reprise. Accepte et documente : un doublon vaut mieux qu'un silence,
+    c'est l'arbitrage deja retenu en v5.8 et v5.9.
+
+    **La reprise ne restaure rien.** Elle reemet une alerte ; elle ne recupere
+    ni la boucle de rappel perdue, ni la notification de resolution du run tue.
+    Et si HA redemarre plusieurs fois, chaque demarrage reemettra l'alerte.
+
+    **Valide au banc sur une COPIE du blueprint**, trois scenarios, avant toute
+    propagation aux quatre instances :
+
+    ```
+    16:37:03   alerte normale, 30 s apres le franchissement   -> non-regression
+    16:41:27   ALERTE DE REPRISE, 31 s apres le demarrage     -> le correctif
+    (rien)     excursion courte de 14 s sous les 30 s         -> toujours muet
+    ```
+
+    **Non exerce** : un capteur `unavailable` au demarrage. La condition
+    emprunte la meme expression `map('float', -1000000)` que le reste du
+    blueprint, donc un capteur mort serait vu « sous le seuil » et ne
+    declencherait pas de reprise. C'est le comportement voulu, mais il n'a pas
+    ete teste.
+
+    **Changelog v5.10 :** correctif — **les messages affichaient une valeur
+    périmée.** Régression introduite par la v5.9, trouvée par un banc de test
+    puis confirmée en production le 04/09/2026 à 21:50.
+
+    Un bloc `variables:` est rendu **une seule fois, au démarrage du run**.
+    Avant la v5.9, le retour à la normale était son propre run, démarré au
+    moment du retour : `resolved_message` se rendait alors avec la valeur
+    courante. Depuis la v5.9 il vit dans le run d'alerte, démarré parfois
+    plusieurs heures plus tôt — la valeur restait donc **figée à celle de
+    l'alerte**.
+
+    Cas réel du 04/09 : le frigo dépasse 7 °C pendant plus de 10 min, l'alerte
+    part légitimement à 21:45:36 (« Frigo à 7.5°C »). À 21:50:23 la température
+    redescend à 6,7 °C et le retour à la normale annonce… « Frigo à 7.5°C ».
+    Le message disait « revenu à la normale » en affichant la valeur anormale.
+
+    **Le même défaut existait sur les rappels, et lui n'est pas une
+    régression** : la boucle a toujours vécu dans le run d'alerte, donc un
+    rappel a toujours affiché la valeur du moment de l'alerte, jamais la
+    valeur courante. Un frigo passé de 26 à 30 °C aurait continué d'annoncer
+    26 °C toutes les 15 min. Corrigé en même temps.
+
+    **Correctif : `message: !input alert_message` au lieu de
+    `message: "{{ alert_message }}"`**, et de même pour les trois autres
+    champs de texte de la branche d'alerte.
+
+    `!input` est une substitution **textuelle** au chargement du blueprint :
+    le template brut atterrit directement dans le `data:` de l'action, et
+    Home Assistant rend les `data:` d'action **à l'exécution**. La valeur
+    redevient celle du moment où le message part.
+
+    **CORRECTION DU 05/09/2026 — la note qui figurait ici etait fausse.**
+    Elle renvoyait a un « piege inverse » sur `fire_smoke_critical_alert.yaml`,
+    ou un `{{ }}` dans un champ d'instance se serait affiche litteralement a
+    cause d'une double indirection `!input` -> variable. C'est faux, et ce
+    changelog-ci le demontre : un bloc `variables:` EST rendu par HA, c'est
+    exactement pourquoi `resolved_message` affichait une valeur figee au lieu
+    de ne rien afficher.
+
+    Il n'y a qu'UN seul mecanisme, pas deux qui se contredisent :
+
+    - un `!input` dans un bloc `variables:` est rendu **une fois, au demarrage
+      du run** — le template s'evalue, mais sa valeur est figee ;
+    - un `!input` pose directement dans un `data:` d'action est rendu **a
+      l'execution** — c'est le correctif de cette v5.10.
+
+    Le second rendu (`{{ ma_variable }}`) porte sur une chaine deja rendue, ce
+    qui n'ajoute ni n'empeche rien. Erreur trouvee par l'audit externe du
+    04/09/2026.
+
+    Les messages du watchdog ne sont pas touchés : ils partent dans leur
+    propre run, déclenché au moment où ils sont émis, donc leur valeur était
+    déjà juste.
+
+    **Changelog v5.9 :** correctif — **« retour à la normale » était envoyé
+    pour des alertes qui n'avaient jamais été émises.**
+
+    La branche de résolution se déclenchait sur `resolved_numeric` /
+    `resolved_state`, deux déclencheurs sans `for:` et surtout **sans aucune
+    mémoire d'une alerte précédente**. N'importe quel franchissement
+    descendant du seuil suffisait.
+
+    Cas réel, nuit du 03/09/2026 : le frigo passe à 7,3 °C à 02:06:01,
+    redescend à 6,7 °C à 02:13:54 — 7 min 53 au-dessus du seuil, donc moins
+    que le délai de confirmation de 10 min, donc **aucune alerte**, ce qui
+    est le comportement voulu. Et pourtant à 02:13:55, deux téléphones
+    sonnent, un email part et le topic ntfy d'urgence délivre un
+    « ✅ Frigo revenu à la normale ». Trois nuits sur quatre, entre 02h et
+    05h30, sur le cycle de dégivrage. Trouvé par un audit externe le
+    03/09/2026 (constat 05).
+
+    **Ce qui a été écarté d'emblée** : allonger le délai de confirmation ne
+    change rien — ce délai n'existe que sur les déclencheurs d'alerte, pas
+    sur ceux de résolution. Et vider `resolved_title` supprimerait aussi la
+    résolution légitime après une vraie alerte.
+
+    **Correctif : le retour à la normale est désormais émis par le run qui a
+    envoyé l'alerte**, à la sortie de sa boucle de rappel. Cette boucle ne
+    sort que lorsque plus aucun capteur n'est en alerte : on est donc, par
+    construction, dans le seul cas où l'annonce a un sens — une alerte a été
+    envoyée, et elle est terminée.
+
+    Les déclencheurs `resolved_numeric` / `resolved_state` et leur branche
+    sont **supprimés**. Les mêmes évènements restent captés, inline, par le
+    `wait_for_trigger` de la boucle : même signal, mais lu par le run qui a
+    le contexte.
+
+    **Aucun helper, aucun drapeau.** Un `input_boolean` « alerte en cours »
+    aurait marché, mais il ajoute un état externe à armer, à désarmer, et
+    qui peut rester bloqué après un redémarrage. Ici il n'y a rien à
+    synchroniser : l'information « une alerte a été envoyée » est le run
+    lui-même.
+
+    Trois ajustements qu'imposait ce déplacement :
+
+    - la garde `repeat_seconds > 0` quitte le `while` et passe dans le `if`
+      interne. La boucle doit tourner même quand la répétition est coupée,
+      sinon le run se termine avant d'avoir vu la résolution ; c'est le `if`
+      qui décide d'envoyer un rappel ou non ;
+    - le `timeout` du `wait_for_trigger` passe en secondes, avec un repli à
+      24 h quand la répétition est coupée ;
+    - la `condition:` qui suivait l'attente devient un `if`. Une `condition:`
+      fausse arrête **tout le script** — c'était la seule sortie de boucle,
+      et c'est précisément ce qui rendait impossible d'ajouter quoi que ce
+      soit après elle.
+
+    **Garde `has_value`** : la boucle sort aussi quand un capteur part en
+    `unavailable`, puisque `map('float', -1000000)` le place sous le seuil.
+    Sans garde, on enverrait un rassurant « tout va bien » sur un capteur
+    silencieux. C'est l'équivalent de la garde ajoutée en v4.1 sur
+    l'ancienne branche.
+
+    **Ce qu'on perd, assumé** : si Home Assistant redémarre pendant une
+    alerte, le run meurt et la résolution ne sera jamais annoncée. Avant, le
+    déclencheur séparé l'aurait envoyée. C'est acceptable — un redémarrage
+    tuait déjà la boucle de rappel, et un message de confort manquant est
+    bien moins grave qu'une fausse alerte de nuit.
+
+    **Changelog v5.8 :** correctif — **la boucle de rappel ne pouvait pas
+    tourner. Le watchdog de l'automation tuait sa propre alerte.**
+
+    `mode: restart` + un trigger `time_pattern` (`watchdog_periodic`) sont
+    incompatibles : chaque tick du watchdog redémarre l'automation, donc
+    **annule la boucle `repeat` en vol**. Concrètement, une alerte frigo à
+    26 °C envoyait sa première notification puis se taisait définitivement
+    au tick suivant — 15 min plus tard sur l'instance frigo, 30 min sur la
+    cave. La répétition, qui est la raison d'être de ce blueprint, n'a
+    jamais pu fonctionner sur AUCUNE des trois instances de sécurité
+    (frigo, congélateur, fuite cave). Trouvé par un audit externe le
+    03/09/2026 (constat 03).
+
+    **Correctif : `mode: parallel` (`max: 10`).** Le tick du watchdog
+    ouvre désormais son propre run et laisse la boucle d'alerte vivre.
+
+    **Ce que ce changement implique, à lire avant d'ajouter un capteur :**
+
+    Avec `restart`, il ne pouvait exister qu'une boucle de rappel à la
+    fois — c'était sa seule vertu. Avec `parallel`, deux déclenchements
+    d'alerte successifs sans retour à la normale entre les deux ouvrent
+    deux boucles, donc deux notifications par intervalle.
+
+    **Sur une instance à UN SEUL capteur, ce cas est impossible par
+    construction** : un trigger `numeric_state`/`state` ne se redéclenche
+    qu'après un franchissement inverse, et ce franchissement inverse est
+    précisément ce qui déclenche `resolved_*`, ce qui termine la boucle.
+    Les trois instances existantes sont dans ce cas — vérifié le
+    04/09/2026, un capteur chacune.
+
+    **Sur une instance à PLUSIEURS capteurs, le cas devient possible** :
+    capteur A franchit le seuil (boucle 1), puis capteur B le franchit à
+    son tour avant que A ne redescende (boucle 2). Les deux boucles
+    notifient. Si vous surveillez plusieurs capteurs dans une même
+    instance, sachez-le — ou séparez en une instance par capteur, ce que
+    l'avertissement sur la politique de destinataires ci-dessus
+    recommande déjà pour d'autres raisons.
+
+    Pourquoi pas un verrou `input_boolean` pour couvrir ce cas : un
+    verrou qui reste bloqué à `on` (capteur qui part en `unavailable`
+    sans jamais repasser sous le seuil, donc sans `resolved_*`) rendrait
+    l'instance définitivement muette. Sur une alerte de sécurité, un
+    doublon vaut mieux qu'un silence.
+
+    Pourquoi pas `queued` : le run watchdog attendrait la fin de la
+    boucle d'alerte, qui peut durer des heures.
+
+    **Changelog v5.7 :** correctif de fiabilité — **un seul canal de
+    notification en panne cassait toute la chaîne d'alerte.** Les 5 appels
+    `notify.send_message` portent désormais `continue_on_error: true`.
+
+    Constaté en production le 16/08/2026 : l'alerte frigo part à 21:00:09
+    vers 4 canaux, push Loïc et ntfy sont livrés, puis SMTP échoue
+    (`Failed to send email message due to a connection error`, 5 s de
+    timeout). L'exception remonte et **avorte la séquence** — la boucle
+    `repeat` qui devait répéter l'alerte toutes les 15 min n'a jamais
+    démarré. Sans conséquence ce jour-là parce que la température est
+    redescendue avant le 1er rappel : c'est de la chance, pas de la
+    conception.
+
+    Deux points vérifiés qui justifient ce choix plutôt qu'un découpage
+    canal par canal :
+    - **HA dispatche les entités d'un même appel en parallèle** (preuve :
+      ntfy, 4ᵉ de la liste, livré à 09.588 alors que SMTP, 3ᵉ, pendait
+      encore jusqu'à son timeout à 14.30). Un canal en panne ne bloque
+      donc pas les autres — `continue_on_error` ne change rien à la
+      livraison, il supprime uniquement la propagation fatale.
+    - **Isoler seulement le canal email serait arbitraire** : ntfy et les
+      push mobile_app (via Nabu Casa) peuvent tomber exactement pareil. Le
+      but d'un fan-out à 4 canaux est la redondance ; aucun canal ne doit
+      pouvoir tuer les trois autres ni la boucle de rappel.
+
+    Ce que ce flag ne masque PAS : l'erreur reste loguée au niveau ERROR
+    et visible dans la trace de l'étape. Ce qu'on perd est uniquement le
+    marquage « automation en échec ». Compromis assumé : pour une alerte
+    de sécurité, « les 3 autres canaux sont passés et la boucle continue »
+    vaut mieux que « l'automation passe au rouge et plus personne n'est
+    réalerté ». Le même correctif a été appliqué à
+    `fire_smoke_critical_alert.yaml`, où l'enjeu était l'escalade de
+    l'alarme incendie.
+
+    Note de cohérence : les chemins de push critique par personne
+    portaient déjà `continue_on_error: true` depuis la v5.4 — c'est
+    l'appel groupé générique qui faisait exception.
+
+    **Changelog v5.6 :** correctif — le trigger `time_pattern` du watchdog
+    périodique était inconditionnel, il tournait même sur une instance sans
+    watchdog configuré (`max_age_minutes: 0`, valeur par défaut). Cas réel :
+    l'instance swap (watchdog volontairement retiré le 15/08/2026 après un
+    faux positif) exécutait ce trigger 48×/jour pour rien, écrasant sa propre
+    historique de traces (HA n'en garde que 5) avec des exécutions à vide.
+    Ajout de `enabled: "{{ max_age_minutes | int(0) > 0 }}"` sur le trigger :
+    évalué une fois au chargement, il désactive proprement le trigger sur
+    toute instance sans watchdog réel, sans toucher aux instances qui en ont
+    un (frigo, congélateur, fuite cave — comportement inchangé).
+
+    **Changelog v5.5 :** nouvel input optionnel **Auto-réparation** (section
+    watchdog). Quand activé, si un capteur approche le seuil "Âge maximum des
+    données" (à 80% de sa valeur, sans nouveau réglage à gérer), l'automation
+    tente de recharger automatiquement l'intégration propriétaire du capteur
+    via `homeassistant.reload_config_entry` ciblé sur l'entité — HA résout
+    lui-même l'intégration, aucun ID à renseigner. Générique, pas spécifique
+    à Matter : s'applique à toute intégration qui expose un service de
+    rechargement. Né d'un cas réel : un capteur de fuite Matter (IKEA
+    KLIPPBOK) resté 51h sans transmettre après un redémarrage HA, alors que
+    le device restait "disponible" côté fabric — désync entre la session
+    Matter (rétablie) et l'abonnement aux rapports d'attributs (jamais
+    renouvelé). Un rechargement manuel de l'intégration a suffi à réparer ;
+    ce nouvel input tente la même chose automatiquement, avant que le
+    watchdog n'alerte. Implémenté en action indépendante après le `choose:`
+    principal (pas une branche de plus dedans) pour ne jamais empêcher la
+    vraie notification watchdog de se déclencher le même cycle. Dédup 1x/24h,
+    même mécanique que le watchdog existant. Défaut `false` — n'affecte
+    aucune instance existante sans activation explicite.
+    **Changelog v5.4 :** réintroduction de l'alerte critique/bouton OK,
+    contournée en v5.1. `notify.send_message` ne pouvant toujours pas
+    transporter de payload critique (vérifié, schéma fixe), 4 nouveaux
+    inputs optionnels (`critical_push_service_1`/`_2` +
+    `critical_push_notify_entity_1`/`_2`) permettent de router jusqu'à 2
+    personnes vers l'ancien service `notify.mobile_app_xxx` (seul chemin
+    qui accepte encore ce payload), en les excluant de l'envoi générique
+    pour éviter un double envoi. Le nom du service reste dans un helper
+    `input_text` référencé par le blueprint — jamais écrit en dur. Ne
+    concerne que les notifications d'alerte/rappel (pas résolu/watchdog,
+    comme documenté depuis v5.0). Si aucun slot n'est configuré,
+    comportement identique à v5.1-5.3 (aucun changement).
+
+    **Changelog v5.3 :** plafond du sélecteur "Âge maximum des données"
+    remonté de 1440 (24h) à 2880 min (48h) — trop bas pour couvrir le rythme
+    naturel de certains capteurs Matter/Thread à pile (silences de 18-23h
+    observés en usage réel, hors panne). Passage en champ numérique libre
+    plutôt qu'un slider, plus précis à cette échelle.
+
+    **Changelog v5.2 :** correction du spam watchdog — la vérification
+    périodique (`watchdog_periodic`) notifiait à CHAQUE cycle
+    (`watchdog_check_frequency`) tant que le capteur restait hors ligne, soit
+    jusqu'à 4 notifications/heure. Elle ne notifie désormais qu'une fois par
+    tranche de 24h tant que le problème persiste. Découvert suite à un capteur
+    de fuite resté hors ligne 13h+ d'affilée (comportement normal pour un
+    capteur Matter/Thread "sleepy end device" à pile).
+
+    **Changelog v5.1 :** correction d'un bug critique — `notify.send_message`
+    n'accepte que `title`/`message` dans cette version de Home Assistant ;
+    le champ `data` (payload critique iOS + bouton DISMISS) qu'on y
+    injectait faisait échouer TOUTE notification d'alerte avec l'erreur
+    `extra keys not allowed @ data['data']`. Découvert lors du premier test
+    réel du capteur de fuite (aucune notif reçue). Les notifications
+    repassent en `title`/`message` simple le temps de réintroduire l'alerte
+    critique/bouton via un mécanisme compatible (services legacy par
+    appareil). Impact : toutes les instances (frigo, congélateur, fuite)
+    étaient concernées dès qu'une vraie alerte se déclenchait.
+    L'input **Alerte critique** reste présent mais n'a plus d'effet pour
+    l'instant.
+
+    **Changelog v5.0 :**
+    - Support de plusieurs capteurs par instance (`multiple: true` sur les
+      champs Entité numérique / Entité état / Notify), avec toute la
+      logique de répétition et de watchdog adaptée en conséquence.
+    - Les destinataires (`notify_entity`) se choisissent maintenant en
+      liste directe, visible dans la config de l'automatisation — plus
+      besoin de créer un helper "groupe" séparé pour notifier plusieurs
+      personnes/canaux.
+    - Message d'alerte/résolution par défaut auto-adapté au nom du capteur
+      déclencheur (`{{ trigger.to_state.name }}`) au lieu d'un texte figé.
+    - Nouvel input **Alerte critique** (bypass du mode silencieux iOS) —
+      pertinent pour une fuite active, pas pour un frigo un peu chaud.
+    - Fréquence de vérification du watchdog désormais configurable
+      (auparavant fixée en dur à 1x/heure).
+    - Bouton "OK" (dismiss) ajouté sur toutes les notifications.
+    - Description reformulée pour refléter l'usage aussi bien numérique
+      que binaire (initialement pensé pour du seuil de température).
+
+    **Changelog v4.1 :** correction d'un faux positif — la notification
+    "retour à la normale" ne se déclenche plus quand un capteur revient
+    d'un état `unavailable`/`unknown` (ex: reconnexion MQTT après un
+    redémarrage de Home Assistant) sans avoir réellement été en alerte.
+
+  domain: automation
+  author: lobdt
+  input:
+
+    # ─────────────────────────────────────────────────────
+    section_trigger:
+      name: 1️⃣ Déclencheur
+      icon: mdi:alert-circle-outline
+      collapsed: false
+      input:
+
+        numeric_entity:
+          name: Entité(s) numérique(s) (optionnel)
+          description: >
+            Capteur(s) numérique(s) à surveiller. L'alerte se déclenche si
+            la valeur d'AU MOINS UN dépasse le **Seuil** ci-dessous.
+
+            Ex: `sensor.cuisine_thermometre_frigo_temperature`
+
+            Laisser vide si tu utilises une/des entité(s) état.
+          default: []
+          selector:
+            entity:
+              multiple: true
+              domain:
+                - sensor
+                - input_number
+
+        numeric_above:
+          name: Seuil — Au-dessus de
+          description: >
+            L'alerte se déclenche si la valeur dépasse ce seuil.
+            Ex: `8` pour un frigo (°C), `-10` pour un congélateur.
+          default: 0
+          selector:
+            number:
+              min: -100
+              max: 10000
+              step: 0.5
+              unit_of_measurement: ""
+              mode: box
+
+        state_entity:
+          name: Entité(s) état (optionnel)
+          description: >
+            Entité(s) dont l'état déclenche l'alerte. L'alerte se déclenche
+            si AU MOINS UNE est dans l'état déclencheur.
+            Ex: `binary_sensor.cave_capteur_inondation_fuite`
+
+            Laisser vide si tu utilises une/des entité(s) numérique(s).
+          default: []
+          selector:
+            entity:
+              multiple: true
+
+        alert_state:
+          name: État déclencheur
+          description: >
+            État qui déclenche l'alerte.
+            Ex: `on`, `detected`, `wet`, `open`
+          default: "on"
+          selector:
+            text: {}
+
+        confirmation_delay:
+          name: Délai de confirmation avant alerte
+          description: >
+            Attendre ce délai avant d'envoyer la première notification.
+            Évite les fausses alertes (ex: ouverture de porte de frigo).
+            Mettre à 0 pour une alerte immédiate (ex: fuite d'eau).
+          default:
+            minutes: 10
+          selector:
+            duration: {}
+
+    # ─────────────────────────────────────────────────────
+    section_notification:
+      name: 2️⃣ Notifications
+      icon: mdi:bell-outline
+      collapsed: false
+      input:
+
+        notify_entity:
+          name: Entité(s) de notification
+          description: >
+            Les entités notify à utiliser — visibles ici directement,
+            sans passer par un helper "groupe" séparé.
+            Ex: `notify.notify_loic`, `notify.notify_alina`,
+            `notify.alerte_maison`
+          default: []
+          selector:
+            entity:
+              multiple: true
+              domain: notify
+
+        critical_alert:
+          name: Alerte critique (bypass silencieux iOS)
+          description: >
+            Si activé, ajoute le payload critique iOS (bypass du mode
+            silencieux/Ne pas déranger) sur les notifications d'alerte et
+            de rappel. Pertinent pour un problème actif nécessitant une
+            action immédiate (ex: fuite d'eau) — pas pour un frigo un peu
+            chaud.
+
+            ⚠️ Nécessite `critical_push_service_1`/`_2` ci-dessous pour
+            avoir un effet réel — `notify.send_message` (utilisé pour tout
+            le reste) ne supporte pas ce payload, voir note technique
+            plus bas.
+          default: false
+          selector:
+            boolean: {}
+
+        critical_push_service_1:
+          name: Service push critique — personne 1 (optionnel)
+          description: >
+            Pour que l'alerte critique/bouton OK fonctionne réellement (voir
+            ci-dessus), indique ici un helper `input_text` qui contient le
+            nom du service `notify.mobile_app_xxx` de cette personne — ex.
+            `input_text.legacy_notify_loic`. Laisser vide pour ne pas
+            utiliser ce mécanisme pour cette personne.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_text
+
+        critical_push_notify_entity_1:
+          name: Entité normale correspondante — personne 1 (optionnel)
+          description: >
+            L'entité de `notify_entity` ci-dessus que `critical_push_service_1`
+            remplace (évite un double envoi à la même personne). Ex.
+            `notify.notify_loic`.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: notify
+
+        critical_push_service_2:
+          name: Service push critique — personne 2 (optionnel)
+          description: >
+            Comme `critical_push_service_1`, pour une 2e personne. Ex.
+            `input_text.legacy_notify_alina`.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_text
+
+        critical_push_notify_entity_2:
+          name: Entité normale correspondante — personne 2 (optionnel)
+          description: >
+            L'entité de `notify_entity` que `critical_push_service_2`
+            remplace. Ex. `notify.notify_alina`.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: notify
+
+        alert_title:
+          name: Titre de l'alerte
+          default: "⚠️ Alerte capteur"
+          selector:
+            text: {}
+
+        alert_message:
+          name: Message d'alerte
+          description: >
+            Tu peux utiliser des templates :
+            `{{ trigger.to_state.name }}` pour le nom du capteur
+            déclencheur, `{{ states('sensor.xxx') }}` pour une valeur
+            spécifique.
+          default: "🚨 Alerte : {{ trigger.to_state.name }} !"
+          selector:
+            text:
+              multiline: true
+
+        resolved_title:
+          name: Titre — Retour à la normale (optionnel)
+          description: Laisser vide pour ne pas notifier au retour à la normale.
+          default: "✅ Retour à la normale"
+          selector:
+            text: {}
+
+        resolved_message:
+          name: Message — Retour à la normale (optionnel)
+          default: "✔️ {{ trigger.to_state.name }} est revenu à la normale."
+          selector:
+            text:
+              multiline: true
+
+    # ─────────────────────────────────────────────────────
+    section_repeat:
+      name: 3️⃣ Répétition
+      icon: mdi:repeat
+      collapsed: false
+      input:
+
+        repeat_interval:
+          name: Intervalle de répétition
+          description: >
+            Nouvelle notification envoyée à cet intervalle tant qu'AU
+            MOINS UN capteur reste en alerte. Mettre à 0 pour désactiver
+            la répétition.
+          default:
+            minutes: 30
+          selector:
+            duration: {}
+
+    # ─────────────────────────────────────────────────────
+    section_watchdog:
+      name: 4️⃣ Surveillance capteur mort (optionnel)
+      icon: mdi:wifi-off
+      collapsed: true
+      input:
+
+        max_age_minutes:
+          name: Âge maximum des données (minutes)
+          description: >
+            Si un capteur n'envoie plus de données depuis ce nombre de
+            minutes, une notification d'alerte est envoyée. Couvre aussi
+            le cas `unavailable` ou `unknown`.
+
+            Mettre à `0` pour désactiver cette surveillance.
+
+            Valeur recommandée : 60 min pour un capteur Zigbee sur pile ;
+            jusqu'à 24-48h pour un capteur Matter/Thread "sleepy end device"
+            dont le rythme de report naturel est bien plus espacé.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 2880
+              step: 5
+              unit_of_measurement: min
+              mode: box
+
+        watchdog_check_frequency:
+          name: Fréquence de vérification périodique
+          description: >
+            À quelle fréquence re-vérifier l'âge des données (en plus de
+            la détection immédiate d'un passage à unavailable/unknown).
+          default: "/30"
+          selector:
+            select:
+              options:
+                - label: Toutes les 5 min
+                  value: "/5"
+                - label: Toutes les 15 min
+                  value: "/15"
+                - label: Toutes les 30 min
+                  value: "/30"
+              sort: false
+              multiple: false
+
+        watchdog_title:
+          name: Titre — Capteur mort
+          default: "📡 Capteur hors ligne"
+          selector:
+            text: {}
+
+        watchdog_message:
+          name: Message — Capteur mort
+          description: >
+            Message envoyé quand un capteur ne répond plus.
+          default: "Un capteur ne répond plus depuis trop longtemps !"
+          selector:
+            text:
+              multiline: true
+
+        auto_reload_integration:
+          name: Auto-réparation — recharger l'intégration si capteur proche du seuil
+          description: >
+            Si activé, quand un capteur approche le seuil "Âge maximum des
+            données" ci-dessus (à 80% de sa valeur), l'automation tente de
+            recharger automatiquement l'intégration propriétaire de ce
+            capteur (`homeassistant.reload_config_entry` ciblé sur
+            l'entité — HA résout lui-même l'intégration). Utile pour les
+            capteurs Matter/Thread sujets à une désync d'abonnement après un
+            redémarrage : la session bas niveau se rétablit mais les
+            rapports d'attributs non, jusqu'à ce que l'intégration soit
+            rechargée. Sans effet néfaste si l'intégration n'a pas ce
+            problème — juste un rechargement inutile occasionnel.
+          default: false
+          selector:
+            boolean: {}
+
+trigger_variables:
+  # v5.6 : necessaire pour le enabled: du trigger watchdog_periodic --
+  # ce champ est evalue au chargement de l'automation, avant que le bloc
+  # variables: (evalue par run) n'existe. Seul trigger_variables: est visible
+  # a ce moment-la (voir skill best-practices HA, section trigger_variables).
+  tv_max_age_minutes: !input max_age_minutes
+
+variables:
+  numeric_entity: !input numeric_entity
+  numeric_above: !input numeric_above
+  state_entity: !input state_entity
+  alert_state: !input alert_state
+  notify_entity: !input notify_entity
+  critical_alert: !input critical_alert
+  alert_title: !input alert_title
+  alert_message: !input alert_message
+  resolved_title: !input resolved_title
+  resolved_message: !input resolved_message
+  repeat_interval: !input repeat_interval
+  max_age_minutes: !input max_age_minutes
+  watchdog_title: !input watchdog_title
+  watchdog_message: !input watchdog_message
+  watchdog_check_frequency: !input watchdog_check_frequency
+  # Intervalle réel en minutes derriere le select '/5', '/15', '/30'
+  watchdog_check_minutes: "{{ watchdog_check_frequency | replace('/', '') | int(15) }}"
+  auto_reload_integration: !input auto_reload_integration
+  # Normalisation : chaque champ peut contenir une string (anciennes
+  # instances, avant le passage a multiple: true) ou une liste (nouvelles
+  # instances / multi-capteurs). On uniformise en liste partout ensuite.
+  numeric_list: >
+    {{ numeric_entity if numeric_entity is sequence and numeric_entity is not string
+       else ([numeric_entity] if numeric_entity else []) }}
+  state_list: >
+    {{ state_entity if state_entity is sequence and state_entity is not string
+       else ([state_entity] if state_entity else []) }}
+  # Entité(s) surveillée(s) (numérique ou état, mutuellement exclusif)
+  watched_entities: >
+    {{ numeric_list if numeric_list | length > 0 else state_list }}
+  # Secondes totales de l'intervalle — calculé une fois, utilisé dans while
+  repeat_seconds: >
+    {{ (repeat_interval.hours | default(0)) * 3600
+       + (repeat_interval.minutes | default(0)) * 60
+       + (repeat_interval.seconds | default(0)) }}
+  # Payload iOS critique (bypass silencieux) — vide si non active
+  critical_data: >
+    {{ {'push': {'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}}} if critical_alert else {} }}
+  # data.data commun a tous les envois critiques : critique (si actif) + bouton OK
+  notify_data: >
+    {{ dict(critical_data, actions=[{'action': 'DISMISS', 'title': 'OK'}]) }}
+
+  # ── Alerte critique — mécanisme de contournement ──────────────────────
+  # notify.send_message n'accepte que title/message (verifie sur cette
+  # instance HA, v5.1). Les 2 emplacements ci-dessous permettent de router
+  # UNE personne a la fois vers le service legacy notify.mobile_app_xxx
+  # (seul chemin qui accepte encore un payload critique + bouton actionnable),
+  # en l'excluant de l'envoi generique pour eviter un double envoi.
+  critical_push_service_1: !input critical_push_service_1
+  critical_push_notify_entity_1: !input critical_push_notify_entity_1
+  critical_push_service_2: !input critical_push_service_2
+  critical_push_notify_entity_2: !input critical_push_notify_entity_2
+  critical_slot_1_active: >
+    {{ critical_alert and (critical_push_service_1 | default([]) | length > 0)
+       and (critical_push_notify_entity_1 | default([]) | length > 0) }}
+  critical_slot_2_active: >
+    {{ critical_alert and (critical_push_service_2 | default([]) | length > 0)
+       and (critical_push_notify_entity_2 | default([]) | length > 0) }}
+  # notify_entity, sans les personnes deja couvertes par le chemin critique
+  # (utilise pour l'alerte/le rappel uniquement — resolu/watchdog gardent
+  # notify_entity tel quel, l'alerte critique ne les concerne pas)
+  notify_entity_generic: >
+    {% set excluded = (
+         [critical_push_notify_entity_1] if critical_slot_1_active else []
+       ) + (
+         [critical_push_notify_entity_2] if critical_slot_2_active else []
+       ) %}
+    {{ notify_entity | reject('in', excluded) | list }}
+
+trigger:
+  # Trigger numérique — une des valeurs dépasse le seuil
+  # Si numeric_entity est vide ([]), ce trigger ne se déclenche jamais
+  - trigger: numeric_state
+    entity_id: !input numeric_entity
+    above: !input numeric_above
+    for: !input confirmation_delay
+    id: alert_numeric
+
+  # Trigger état — une entité passe à l'état déclencheur
+  # Si state_entity est vide ([]), ce trigger ne se déclenche jamais
+  - trigger: state
+    entity_id: !input state_entity
+    to: !input alert_state
+    for: !input confirmation_delay
+    id: alert_state
+
+  # v5.9 : les declencheurs resolved_numeric / resolved_state ont ete
+  # SUPPRIMES, ainsi que leur branche. Le retour a la normale est desormais
+  # emis par le run qui a envoye l'alerte, a la sortie de sa boucle de
+  # rappel. Un declencheur separe ne pouvait pas savoir si une alerte avait
+  # precede : il annoncait "tout va bien" pour des alertes jamais emises.
+  # Les memes evenements restent captes, inline, par le wait_for_trigger de
+  # la boucle -- meme signal, mais lu par le run qui a le contexte.
+
+  # Trigger capteur unavailable/unknown
+  - trigger: state
+    entity_id: !input numeric_entity
+    to:
+      - unavailable
+      - unknown
+    for:
+      minutes: 5
+    id: watchdog_unavailable_numeric
+
+  - trigger: state
+    entity_id: !input state_entity
+    to:
+      - unavailable
+      - unknown
+    for:
+      minutes: 5
+    id: watchdog_unavailable_state
+
+  # Trigger watchdog périodique — vérifie l'âge des données
+  # v5.6 : desactive au chargement si aucun watchdog n'est configure
+  # (max_age_minutes: 0, defaut) -- evite un time_pattern qui tourne pour
+  # rien et ecrase l'historique de traces (5 max) sur les instances sans
+  # watchdog reel (ex: swap). Sans effet sur les instances qui en ont un.
+  - trigger: time_pattern
+    minutes: !input watchdog_check_frequency
+    enabled: "{{ tv_max_age_minutes | int(0) > 0 }}"
+    id: watchdog_periodic
+
+  # v5.11 : reprise au demarrage de HA. Un declencheur numeric_state doit
+  # observer la valeur du cote non-declenchant pour s'armer ; apres un
+  # redemarrage avec le capteur deja hors seuil il ne s'arme jamais et
+  # l'alerte ne repart PLUS JAMAIS. Mesure au banc le 05/09/2026 avec
+  # contre-epreuve. Voir troubleshooting.md.
+  - trigger: homeassistant
+    event: start
+    id: demarrage
+
+condition: []
+
+action:
+  - choose:
+
+    # ── Alerte déclenchée ─────────────────────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id:
+            - alert_numeric
+            - alert_state
+            - demarrage
+        # v5.11 : au demarrage, le declencheur ne porte aucune information sur
+        # le capteur -- il faut verifier ici qu'au moins un est hors seuil.
+        # Sur alert_numeric / alert_state cette condition est vraie par
+        # construction (c'est le for: qui vient de la garantir), donc elle ne
+        # change rien pour eux. Verifie au banc, scenario 1.
+        - condition: template
+          value_template: >
+            {% if numeric_list | length > 0 %}
+              {{ numeric_list | map('states') | map('float', -1000000)
+                 | select('gt', numeric_above | float(0)) | list | length > 0 }}
+            {% else %}
+              {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+            {% endif %}
+      sequence:
+        # v5.11 : au demarrage il n'y a AUCUN historique, donc pas de for:.
+        # On rejoue le delai de confirmation ici puis on reconfirme, pour ne
+        # pas alerter a chaque reboot sur un capteur momentanement hors seuil.
+        # Sur les autres declencheurs le for: a deja fait ce travail, donc ce
+        # bloc est saute et n'ajoute aucun delai.
+        - if:
+            - condition: trigger
+              id: demarrage
+          then:
+            - delay: !input confirmation_delay
+            - condition: template
+              value_template: >
+                {% if numeric_list | length > 0 %}
+                  {{ numeric_list | map('states') | map('float', -1000000)
+                     | select('gt', numeric_above | float(0)) | list | length > 0 }}
+                {% else %}
+                  {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+                {% endif %}
+        - action: notify.send_message
+          continue_on_error: true
+          target:
+            entity_id: "{{ notify_entity_generic }}"
+          data:
+            title: !input alert_title
+            message: !input alert_message
+
+        # Chemin critique par personne — voir note technique sur
+        # critical_push_service_1/2 plus haut. Templated service name
+        # deliberement assume ici : notify.send_message ne peut pas
+        # transporter le payload critique, c'est le seul mecanisme HA qui
+        # le peut encore (service legacy par appareil, pas une entite).
+        - if:
+            - condition: template
+              value_template: "{{ critical_slot_1_active }}"
+          then:
+            - action: "notify.{{ states(critical_push_service_1) }}"
+              data:
+                title: !input alert_title
+                message: !input alert_message
+                data: "{{ notify_data }}"
+              continue_on_error: true
+        - if:
+            - condition: template
+              value_template: "{{ critical_slot_2_active }}"
+          then:
+            - action: "notify.{{ states(critical_push_service_2) }}"
+              data:
+                title: !input alert_title
+                message: !input alert_message
+                data: "{{ notify_data }}"
+              continue_on_error: true
+
+        - repeat:
+            # v5.9 : la garde "repeat_seconds > 0" a ete retiree d'ici. La
+            # boucle doit tourner meme quand la repetition est coupee, sinon
+            # le run se termine avant d'avoir vu le retour a la normale --
+            # et c'est lui, desormais, qui doit l'annoncer. La repetition
+            # reste desactivable : c'est le if interne qui decide d'envoyer
+            # un rappel ou non.
+            while:
+              - condition: template
+                value_template: >
+                  {% if numeric_list | length > 0 %}
+                    {{ numeric_list | map('states') | map('float', -1000000)
+                       | select('gt', numeric_above | float(0)) | list | length > 0 }}
+                  {% else %}
+                    {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+                  {% endif %}
+            sequence:
+              - wait_for_trigger:
+                  - trigger: numeric_state
+                    entity_id: !input numeric_entity
+                    below: !input numeric_above
+                  - trigger: state
+                    entity_id: !input state_entity
+                    from: !input alert_state
+                # v5.9 : exprime en secondes au lieu de !input repeat_interval,
+                # pour pouvoir retomber sur 24h quand la repetition est coupee.
+                # La boucle attend alors la resolution sans rien envoyer.
+                timeout: "{{ repeat_seconds if repeat_seconds > 0 else 86400 }}"
+                continue_on_timeout: true
+              # v5.9 : un if, PAS un condition. Un condition faux arretait
+              # TOUT le script -- c'etait la seule sortie de boucle, et c'est
+              # ce qui rendait impossible d'ajouter quoi que ce soit apres.
+              # Avec un if, la sequence se termine normalement, le while se
+              # reevalue, la boucle sort proprement, et le run atteint enfin
+              # le retour a la normale.
+              - if:
+                  - condition: template
+                    value_template: "{{ repeat_seconds > 0 }}"
+                  - condition: template
+                    value_template: >
+                      {% if numeric_list | length > 0 %}
+                        {{ numeric_list | map('states') | map('float', -1000000)
+                           | select('gt', numeric_above | float(0)) | list | length > 0 }}
+                      {% else %}
+                        {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+                      {% endif %}
+                then:
+                  - action: notify.send_message
+                    continue_on_error: true
+                    target:
+                      entity_id: "{{ notify_entity_generic }}"
+                    data:
+                      title: !input alert_title
+                      message: !input alert_message
+
+                  - if:
+                      - condition: template
+                        value_template: "{{ critical_slot_1_active }}"
+                    then:
+                      - action: "notify.{{ states(critical_push_service_1) }}"
+                        data:
+                          title: !input alert_title
+                          message: !input alert_message
+                          data: "{{ notify_data }}"
+                        continue_on_error: true
+                  - if:
+                      - condition: template
+                        value_template: "{{ critical_slot_2_active }}"
+                    then:
+                      - action: "notify.{{ states(critical_push_service_2) }}"
+                        data:
+                          title: !input alert_title
+                          message: !input alert_message
+                          data: "{{ notify_data }}"
+                        continue_on_error: true
+
+        # ── Retour à la normale — émis par le run qui a alerté (v5.9) ──────
+        # La boucle ci-dessus ne sort QUE lorsque plus aucun capteur n'est en
+        # alerte. On est donc, par construction, dans le seul cas ou un retour
+        # a la normale a un sens : une alerte a bien ete envoyee, et elle est
+        # terminee. Aucun helper, aucun drapeau a armer ni a remettre a zero,
+        # rien qui puisse rester bloque : c'est le meme run qui a alerte qui
+        # annonce la fin.
+        #
+        # La garde has_value distingue "repasse sous le seuil" de "le capteur
+        # est mort". Sans elle, un capteur qui part en unavailable fait sortir
+        # la boucle (map('float', -1000000) le place sous le seuil) et on
+        # enverrait un rassurant "tout va bien" sur un capteur silencieux.
+        # C'est l'equivalent de la garde v4.1 de l'ancienne branche.
+        - if:
+            - condition: template
+              value_template: >
+                {{ resolved_title | length > 0
+                   and watched_entities | select('has_value') | list | length
+                       == watched_entities | length }}
+          then:
+            - action: notify.send_message
+              continue_on_error: true
+              target:
+                entity_id: !input notify_entity
+              data:
+                title: !input resolved_title
+                message: !input resolved_message
+
+    # ── Capteur unavailable/unknown ───────────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id:
+            - watchdog_unavailable_numeric
+            - watchdog_unavailable_state
+        - condition: template
+          value_template: "{{ max_age_minutes > 0 }}"
+      sequence:
+        - action: notify.send_message
+          continue_on_error: true
+          target:
+            entity_id: !input notify_entity
+          data:
+            title: "{{ watchdog_title }}"
+            message: "{{ watchdog_message }}"
+
+    # ── Watchdog périodique — données trop anciennes ──────────────────────
+    - conditions:
+        - condition: trigger
+          id: watchdog_periodic
+        - condition: template
+          value_template: "{{ max_age_minutes > 0 }}"
+        - condition: template
+          value_template: >
+            {# Ne notifie qu'UNE fois par tranche de 24h tant que ça reste hors ligne,
+               au lieu de spammer a chaque verification periodique (toutes les
+               watchdog_check_frequency minutes). Des qu'un capteur franchit
+               max_age_minutes, la fenetre [max_age_minutes, max_age_minutes +
+               check_minutes[ notifie une fois, puis se tait jusqu'a la meme
+               fenetre 24h plus tard. #}
+            {% set ns = namespace(stale=false) %}
+            {% for e in watched_entities %}
+              {# v5.12 : last_reported, PAS last_updated. Voir le changelog. #}
+              {% set stale_min = (now() - states[e].last_reported).total_seconds() / 60 %}
+              {% if stale_min > max_age_minutes and (stale_min - max_age_minutes) % 1440 < watchdog_check_minutes %}
+                {% set ns.stale = true %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.stale }}
+      sequence:
+        - action: notify.send_message
+          continue_on_error: true
+          target:
+            entity_id: !input notify_entity
+          data:
+            title: "{{ watchdog_title }}"
+            message: "{{ watchdog_message }}"
+
+  # ── Auto-réparation (v5.5) — indépendante du choose ci-dessus ────────────
+  # Volontairement PAS une branche de plus dans le choose : le choose est
+  # mutuellement exclusif (une seule branche par declenchement), et la
+  # reparation (a 80% du seuil) doit pouvoir tourner sans empecher la vraie
+  # alerte watchdog (a 100%) de se declencher le meme cycle si besoin.
+  - if:
+      - condition: template
+        value_template: "{{ auto_reload_integration and max_age_minutes > 0 and trigger is defined and trigger.id == 'watchdog_periodic' }}"
+    then:
+      - repeat:
+          for_each: "{{ watched_entities }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >
+                    {% set reload_threshold = max_age_minutes * 0.8 %}
+                    {# v5.12 : last_reported, PAS last_updated. #}
+                    {% set stale_min = (now() - states[repeat.item].last_reported).total_seconds() / 60 %}
+                    {{ stale_min > reload_threshold and (stale_min - reload_threshold) % 1440 < watchdog_check_minutes }}
+              then:
+                - action: homeassistant.reload_config_entry
+                  target:
+                    entity_id: "{{ repeat.item }}"
+                  continue_on_error: true
+    alias: "Auto-reparation : recharge l'integration proprietaire avant que le watchdog n'alerte (opt-in, defaut false)"
+
+# v5.8 : parallel, PAS restart. Avec restart, chaque tick du trigger
+# time_pattern du watchdog redemarrait l'automation et tuait la boucle
+# repeat de rappel en vol -- la repetition d'alerte n'a jamais pu
+# fonctionner. Voir le changelog v5.8 pour le compromis assume sur les
+# instances multi-capteurs.
+mode: parallel
+max: 10
