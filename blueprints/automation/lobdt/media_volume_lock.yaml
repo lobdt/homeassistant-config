@@ -3,7 +3,34 @@ blueprint:
   description: >
     # 🔒 Media Volume Lock
 
-    **Version: 1.4**
+    **Version: 1.5**
+
+
+    **Changelog v1.5 (05/09/2026) :** correctif — **l'escalade « volume bloqué »
+    etait le seul fan-out de notification de l'installation sans
+    `continue_on_error`, et c'est une boucle sequentielle.**
+
+    La lecon du P0 du 16/08 — « un canal en panne ne doit jamais avorter une
+    sequence » — avait ete appliquee a `threshold_alert` (v5.7), a
+    `fire_smoke_critical_alert` (5 appels sur 5) et jusque dans
+    `script.nuki_verifier_serrure`. Elle avait ete oubliee ici : ce blueprint
+    ne portait **aucun** `continue_on_error`, contre 13 dans `threshold_alert`
+    et 17 dans le blueprint incendie.
+
+    **Et le raisonnement de la v5.7 ne couvrait pas ce cas — il l'aggrave.**
+    Ce changelog-la justifiait le flag en notant que HA dispatche EN PARALLELE
+    les entites d'un meme appel, preuve a l'appui. C'est exact, et c'est
+    precisement pourquoi ca ne s'applique pas ici : un `for_each` produit des
+    appels SUCCESSIFS. Une exception sur `ntfy_emergency` — premier de la liste
+    dans les deux instances — avorte la sequence AVANT l'email.
+
+    Scenario reel : derive de volume persistante pendant une coupure Internet,
+    ce qui n'est pas une coincidence improbable puisque la meme coupure degrade
+    la liaison AirPlay. La chambre s'allume a 100 %, ntfy echoue, l'email ne
+    part jamais, et personne ne sait pourquoi la lumiere s'est allumee.
+
+    Trouve par l'audit externe du 04/09/2026 (constat R2). Une ligne, aucun
+    effet sur le comportement nominal.
 
 
     Verrouille le volume d'un lecteur média (HomePod, enceinte AirPlay…) à une
@@ -458,7 +485,25 @@ actions:
           - repeat:
               for_each: "{{ alert_notify_targets }}"
               sequence:
+                # v1.5 : continue_on_error INDISPENSABLE ICI, et pour une
+                # raison differente de celle du P0 du 16/08 sur
+                # threshold_alert. La-bas, un seul notify.send_message ciblait
+                # plusieurs entites, et HA les dispatche EN PARALLELE : un
+                # canal en panne ne bloquait pas les autres, le flag ne servait
+                # qu'a empecher la propagation fatale.
+                # Ici c'est un for_each, donc des appels SUCCESSIFS. Une
+                # exception sur ntfy_emergency -- premier de la liste dans les
+                # deux instances -- avorte la sequence AVANT l'email. Le cas
+                # est structurellement plus grave que celui qui a motive la
+                # v5.7, pas moins.
+                # Scenario : derive de volume pendant une coupure Internet,
+                # ce qui n'est pas une coincidence improbable puisque la meme
+                # coupure degrade la liaison AirPlay. La chambre s'allume a
+                # 100 %, ntfy echoue, l'email ne part jamais, personne ne sait
+                # pourquoi la lumiere s'est allumee.
+                # Trouve par l'audit externe du 04/09/2026 (constat R2).
                 - action: notify.send_message
+                  continue_on_error: true
                   target:
                     entity_id: "{{ repeat.item }}"
                   data:

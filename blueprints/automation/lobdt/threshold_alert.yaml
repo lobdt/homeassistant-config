@@ -154,13 +154,24 @@ blueprint:
     Home Assistant rend les `data:` d'action **à l'exécution**. La valeur
     redevient celle du moment où le message part.
 
-    **À ne pas confondre avec le piège inverse**, documenté sur
-    `fire_smoke_critical_alert.yaml` : là-bas un `{{ }}` écrit dans un champ
-    d'instance s'affichait littéralement, parce que le texte traversait
-    `!input` **puis** une variable — et Jinja ne réévalue pas le résultat d'un
-    rendu. C'est la **double indirection** qui casse le re-rendu, jamais le
-    `!input` seul. Un `!input` posé directement dans un `data:` se rend
-    normalement, à l'exécution.
+    **CORRECTION DU 05/09/2026 — la note qui figurait ici etait fausse.**
+    Elle renvoyait a un « piege inverse » sur `fire_smoke_critical_alert.yaml`,
+    ou un `{{ }}` dans un champ d'instance se serait affiche litteralement a
+    cause d'une double indirection `!input` -> variable. C'est faux, et ce
+    changelog-ci le demontre : un bloc `variables:` EST rendu par HA, c'est
+    exactement pourquoi `resolved_message` affichait une valeur figee au lieu
+    de ne rien afficher.
+
+    Il n'y a qu'UN seul mecanisme, pas deux qui se contredisent :
+
+    - un `!input` dans un bloc `variables:` est rendu **une fois, au demarrage
+      du run** — le template s'evalue, mais sa valeur est figee ;
+    - un `!input` pose directement dans un `data:` d'action est rendu **a
+      l'execution** — c'est le correctif de cette v5.10.
+
+    Le second rendu (`{{ ma_variable }}`) porte sur une chaine deja rendue, ce
+    qui n'ajoute ni n'empeche rien. Erreur trouvee par l'audit externe du
+    04/09/2026.
 
     Les messages du watchdog ne sont pas touchés : ils partent dans leur
     propre run, déclenché au moment où ils sont émis, donc leur valeur était
