@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.11**
+    **Version: 5.12**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,64 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.12 :** correctif — **le watchdog capteur-mort mesurait la
+    mauvaise chose. Il declarait morts des capteurs parfaitement vivants dont
+    la valeur ne bougeait pas.**
+
+    Il calculait l'anciennete avec `last_updated`, qui ne bouge QUE si la
+    valeur ou les attributs changent. `last_reported`, lui, avance a chaque
+    ecriture, y compris a valeur identique — c'est donc lui qui repond a la
+    vraie question : « l'integration interroge-t-elle encore cette entite ? »
+
+    **Mesure du 05/09/2026, sur le capteur de swap :**
+
+    ```
+    sensor.system_monitor_swap_usage   valeur 11,9 inchangee depuis ~2 h 45
+      last_updated    164,4 min   <- ce que le watchdog regardait
+      last_reported     0,1 min   <- le capteur rapporte toutes les ~15 s
+    ```
+
+    Contre-controle sur deux capteurs qui rapportent a chaque changement :
+
+    ```
+    sensor.cuisine_thermometre_frigo_temperature   last_updated = last_reported
+    binary_sensor.cave_..._water_leak              last_updated = last_reported
+    ```
+
+    Le correctif est donc **sans effet sur le frigo, le congelateur et la
+    cave**, et corrige le seul cas ou les deux champs divergent : un capteur
+    en PLATEAU.
+
+    **C'EST LA CAUSE RACINE DU FAUX POSITIF DU 15/08/2026** qui avait fait
+    retirer le watchdog de l'instance swap. La note ecrite ce jour-la avait
+    identifie le mecanisme exactement — « un watchdog capteur-mort base sur
+    last_updated n'est valide QUE sur une grandeur qui varie continuellement »
+    — mais avait conclu en desactivant le watchdog plutot qu'en reparant le
+    calcul. Le blueprint restait donc faux pour tout futur capteur en plateau.
+
+    **Un audit externe du 04/09 a retrouve le probleme** (constat P1 : le
+    capteur de swap etait reellement gele 14 h 30 sans que rien ne le signale)
+    mais a propose le mauvais remede : reactiver le watchdog avec
+    `max_age_minutes: 180`. Cela aurait tenu quelques heures puis rejoue le
+    faux positif du 15/08, puisque le swap plateaute regulierement plus de 3 h.
+    Un symptome correctement observe n'est pas un mecanisme etabli.
+
+    **Valide au banc sur une COPIE du blueprint**, avant propagation. Test de
+    non-regression : sur un `input_number`, ou `last_reported` et
+    `last_updated` sont identiques par construction, le watchdog doit se
+    comporter exactement comme avant.
+
+    ```
+    21:25:58   valeur fixee, max_age_minutes: 1, verification /5
+    21:30:00   tick -> choose/2 (watchdog_periodic), 3 conditions vraies
+    21:30:00   notify.send_message « CAPTEUR MUET »   -> detection intacte
+    ```
+
+    C'etait le vrai risque de ce changement : si `last_reported` s'etait
+    comporte autrement, les quatre instances auraient perdu SILENCIEUSEMENT
+    leur detection de capteur muet — dont le capteur de fuite d'eau, celui-la
+    meme qui etait reste 51 h sans transmettre en aout.
 
     **Changelog v5.11 :** correctif — **apres un redemarrage de Home
     Assistant, une alerte en cours ne repartait JAMAIS.**
@@ -1061,7 +1119,8 @@ action:
                fenetre 24h plus tard. #}
             {% set ns = namespace(stale=false) %}
             {% for e in watched_entities %}
-              {% set stale_min = (now() - states[e].last_updated).total_seconds() / 60 %}
+              {# v5.12 : last_reported, PAS last_updated -- voir le changelog. #}
+              {% set stale_min = (now() - states[e].last_reported).total_seconds() / 60 %}
               {% if stale_min > max_age_minutes and (stale_min - max_age_minutes) % 1440 < watchdog_check_minutes %}
                 {% set ns.stale = true %}
               {% endif %}
@@ -1092,7 +1151,8 @@ action:
                 - condition: template
                   value_template: >
                     {% set reload_threshold = max_age_minutes * 0.8 %}
-                    {% set stale_min = (now() - states[repeat.item].last_updated).total_seconds() / 60 %}
+                    {# v5.12 : last_reported, PAS last_updated. #}
+                    {% set stale_min = (now() - states[repeat.item].last_reported).total_seconds() / 60 %}
                     {{ stale_min > reload_threshold and (stale_min - reload_threshold) % 1440 < watchdog_check_minutes }}
               then:
                 - action: homeassistant.reload_config_entry
