@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔔 Threshold Alert & Repeat
 
-    **Version: 5.10**
+    **Version: 5.11**
 
 
     Envoie une notification répétée tant qu'un ou plusieurs capteurs dépassent
@@ -43,6 +43,85 @@ blueprint:
     5. Si un capteur ne répond plus (unavailable ou données trop
        anciennes), une notification dédiée est envoyée.
 
+
+    **Changelog v5.11 :** correctif — **apres un redemarrage de Home
+    Assistant, une alerte en cours ne repartait JAMAIS.**
+
+    Ce n'est pas une regression des versions precedentes : le defaut est dans
+    le declencheur `numeric_state` de Home Assistant lui-meme, et il existait
+    depuis toujours.
+
+    Un declencheur `numeric_state` doit **observer la valeur du cote
+    non-declenchant pour s'armer**. Au redemarrage il la voit deja au-dessus du
+    seuil, ne s'arme jamais, et ne declenche plus. Meme chose pour un `state`
+    avec `from`/`to` explicites.
+
+    **Consequence** : si HA redemarre pendant qu'un frigo est a 26 °C, plus
+    aucune alerte ne part — jamais — jusqu'a ce que la temperature redescende
+    sous le seuil puis remonte. Sur un compresseur en panne, elle ne
+    redescendra pas.
+
+    **Mesure au banc du 05/09/2026, avec contre-epreuve :**
+
+    ```
+    12:40:23,755   alerte, run demarre
+    12:42:25,346   execution: "cancelled"      <- le redemarrage tue le run
+    12:43:42,964   HA restaure les etats, valeur toujours au-dessus du seuil
+    12:47:52       +251 s : aucun nouveau run
+    ---            contre-epreuve : valeur descendue puis remontee
+    12:48:39,145   nouveau run, 30 s apres     <- l'automation est vivante
+    ```
+
+    La contre-epreuve est la partie essentielle : sans elle, « rien ne s'est
+    declenche » et « l'automation est cassee » sont indiscernables.
+
+    **Correctif : un declencheur `homeassistant: start`**, accepte par la
+    branche d'alerte existante — une seule sequence, deux portes d'entree,
+    plutot qu'une branche dupliquee.
+
+    Deux ajouts l'accompagnent :
+
+    - une **condition** « au moins un capteur hors seuil » sur la branche. Au
+      demarrage le declencheur ne porte aucune information sur les capteurs,
+      il faut le verifier explicitement. Sur `alert_numeric` / `alert_state`
+      elle est vraie par construction — le `for:` vient de la garantir — donc
+      elle ne change rien pour eux ;
+    - un **`if` en tete de sequence** qui rejoue le delai de confirmation
+      quand le declencheur est `demarrage`, puis reconfirme. Sur les autres
+      declencheurs le bloc est saute et n'ajoute aucun delai.
+
+    **Trois compromis assumes :**
+
+    **Le delai est rejoue en entier.** Un redemarrage remet a zero le compteur
+    `for:` de tous les declencheurs — comportement natif de HA. Si HA redemarre
+    alors que le frigo est au-dessus du seuil depuis 20 min, la reprise repart
+    sur le delai complet. C'est le prix a payer pour ne pas faire sonner tous
+    les canaux a chaque reboot sur un capteur momentanement hors seuil ;
+    alerter immediatement recreerait le bruit que la v5.9 a supprime.
+
+    **Le doublon reste possible.** Si le capteur oscille apres le demarrage, le
+    declencheur normal s'arme et peut lancer une seconde boucle a cote de celle
+    de la reprise. Accepte et documente : un doublon vaut mieux qu'un silence,
+    c'est l'arbitrage deja retenu en v5.8 et v5.9.
+
+    **La reprise ne restaure rien.** Elle reemet une alerte ; elle ne recupere
+    ni la boucle de rappel perdue, ni la notification de resolution du run tue.
+    Et si HA redemarre plusieurs fois, chaque demarrage reemettra l'alerte.
+
+    **Valide au banc sur une COPIE du blueprint**, trois scenarios, avant toute
+    propagation aux quatre instances :
+
+    ```
+    16:37:03   alerte normale, 30 s apres le franchissement   -> non-regression
+    16:41:27   ALERTE DE REPRISE, 31 s apres le demarrage     -> le correctif
+    (rien)     excursion courte de 14 s sous les 30 s         -> toujours muet
+    ```
+
+    **Non exerce** : un capteur `unavailable` au demarrage. La condition
+    emprunte la meme expression `map('float', -1000000)` que le reste du
+    blueprint, donc un capteur mort serait vu « sous le seuil » et ne
+    declencherait pas de reprise. C'est le comportement voulu, mais il n'a pas
+    ete teste.
 
     **Changelog v5.10 :** correctif — **les messages affichaient une valeur
     périmée.** Régression introduite par la v5.9, trouvée par un banc de test
@@ -747,6 +826,15 @@ trigger:
     enabled: "{{ tv_max_age_minutes | int(0) > 0 }}"
     id: watchdog_periodic
 
+  # v5.11 : reprise au demarrage de HA. Un declencheur numeric_state doit
+  # observer la valeur du cote non-declenchant pour s'armer ; apres un
+  # redemarrage avec le capteur deja hors seuil il ne s'arme jamais et
+  # l'alerte ne repart PLUS JAMAIS. Mesure au banc le 05/09/2026 avec
+  # contre-epreuve. Voir troubleshooting.md.
+  - trigger: homeassistant
+    event: start
+    id: demarrage
+
 condition: []
 
 action:
@@ -758,7 +846,39 @@ action:
           id:
             - alert_numeric
             - alert_state
+            - demarrage
+        # v5.11 : au demarrage, le declencheur ne porte aucune information sur
+        # le capteur -- il faut verifier ici qu'au moins un est hors seuil.
+        # Sur alert_numeric / alert_state cette condition est vraie par
+        # construction (c'est le for: qui vient de la garantir), donc elle ne
+        # change rien pour eux. Verifie au banc, scenario 1.
+        - condition: template
+          value_template: >
+            {% if numeric_list | length > 0 %}
+              {{ numeric_list | map('states') | map('float', -1000000)
+                 | select('gt', numeric_above | float(0)) | list | length > 0 }}
+            {% else %}
+              {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+            {% endif %}
       sequence:
+        # v5.11 : au demarrage il n'y a AUCUN historique, donc pas de for:.
+        # On rejoue le delai de confirmation ici puis on reconfirme, pour ne
+        # pas alerter a chaque reboot sur un capteur momentanement hors seuil.
+        # Sur les autres declencheurs le for: a deja fait ce travail, donc ce
+        # bloc est saute et n'ajoute aucun delai.
+        - if:
+            - condition: trigger
+              id: demarrage
+          then:
+            - delay: !input confirmation_delay
+            - condition: template
+              value_template: >
+                {% if numeric_list | length > 0 %}
+                  {{ numeric_list | map('states') | map('float', -1000000)
+                     | select('gt', numeric_above | float(0)) | list | length > 0 }}
+                {% else %}
+                  {{ state_list | select('is_state', alert_state) | list | length > 0 }}
+                {% endif %}
         - action: notify.send_message
           continue_on_error: true
           target:
