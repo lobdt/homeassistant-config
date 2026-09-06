@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🔒 Media Volume Lock
 
-    **Version: 1.5**
+    **Version: 1.6**
 
 
     **Changelog v1.6 (06/09/2026) :** correctif — **le watchdog et l'escalade
