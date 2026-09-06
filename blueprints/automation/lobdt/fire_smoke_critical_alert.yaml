@@ -60,6 +60,32 @@ blueprint:
       chaîne était lui-même hors service. Il ne déclenche aucune sirène.
       Si aucun slot critique n'est configuré, le comportement est celui
       d'avant ce correctif, en moins cassé : tout part en générique.
+    - **06/09/2026 — `continue_on_error: true` sur les 11 commandes
+      d'appareil de la propagation d'alarme.** Le correctif du 16/08 puis
+      celui du 04/09 ont couvert la classe « notification » — 17 appels au
+      total. Ils n'ont jamais touché la classe « commande d'appareil », qui
+      s'exécute **avant** les notifications d'alarme : 7 `select.select_option`
+      (buzzers), `siren.turn_on`, `switch.turn_off` (silence),
+      `switch.turn_on` (alarme), plus le hook utilisateur
+      `default: !input allalarm__action`. Aucune n'était gardée, et un seul
+      buzzer injoignable faisait donc avorter la séquence **avant** le
+      « 🔥 FEU — ÉVACUEZ ! », avant la boucle de rappel et avant le bouton
+      « Couper la sirène ».
+      **Le défaut était latent, pas actif** : les quatre cibles dérivent de
+      `sensors_smoke_notdetected`, donc avec un seul détecteur la liste est
+      vide en alarme réelle et rien ne s'exécute. Il s'arme **dès le
+      deuxième détecteur** — l'ajout des Frient SMSZB-120 est déjà planifié
+      sur cette instance. Trouvé par l'audit externe du 05→06/09, vérifié
+      indépendamment. Le journal porte bien des échecs de cette famille :
+      `No ACK from MQTT server in 10 seconds`, deux fois le 05/09.
+      La garde est posée **sur chaque appel** et non sur le `repeat` qui les
+      contient : si le buzzer du détecteur 2 échoue, le détecteur 3 reçoit
+      quand même le sien.
+      **Non couvert délibérément** : les blocs `siren.turn_off` /
+      `switch.turn_on` (silence) / `switch.turn_off` (alarme) des chemins
+      FAUSSE ALERTE et de fin de test portent le même défaut, mais leur
+      échec n'étouffe aucune notification — il laisse une sirène allumée.
+      À traiter séparément, c'est un arbitrage différent.
     - **16/08/2026 — `continue_on_error: true` sur les 5 appels
       `notify.send_message`.** Sans ça, un seul canal de notification en
       panne (SMTP injoignable, ntfy down, Nabu Casa coupé) fait lever une
@@ -1314,6 +1340,7 @@ action:
             - conditions: '{{ ''alarm'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1321,6 +1348,7 @@ action:
             - conditions: '{{ ''fire'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1328,6 +1356,7 @@ action:
             - conditions: '{{ ''fire_alarm'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1335,6 +1364,7 @@ action:
             - conditions: '{{ ''emergency'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1342,6 +1372,7 @@ action:
             - conditions: '{{ ''smoke_siren'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1349,6 +1380,7 @@ action:
             - conditions: '{{ ''on'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1356,6 +1388,7 @@ action:
             - conditions: '{{ ''ON'' in repeat_options }}'
               sequence:
               - action: select.select_option
+                continue_on_error: true
                 target:
                   entity_id: '{{ repeat.item }}'
                 data:
@@ -1364,21 +1397,25 @@ action:
         then:
         - alias: Trigger Sirens (siren entities)
           action: siren.turn_on
+          continue_on_error: true
           target:
             entity_id: '{{ sirens_set_manual_alarm }}'
       - if: '{{ silence_switches_set_manual_alarm | length > 0 }}'
         then:
         - alias: Ensure silence disabled before alarm
           action: switch.turn_off
+          continue_on_error: true
           target:
             entity_id: '{{ silence_switches_set_manual_alarm }}'
       - if: '{{ alarm_switches_set_manual_alarm | length > 0 }}'
         then:
         - alias: Trigger Sirens (switch alarm entities)
           action: switch.turn_on
+          continue_on_error: true
           target:
             entity_id: '{{ alarm_switches_set_manual_alarm }}'
       - choose: []
+        continue_on_error: true
         default: !input allalarm__action
       - variables:
           act_mute: MUTE_ALL_{{ context.id }}
