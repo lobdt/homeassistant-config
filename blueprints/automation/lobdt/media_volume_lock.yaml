@@ -6,6 +6,44 @@ blueprint:
     **Version: 1.5**
 
 
+    **Changelog v1.6 (06/09/2026) :** correctif — **le watchdog et l'escalade
+    ne s'armaient pas si le volume était déjà hors cible au démarrage de HA.**
+    Les deux sont des déclencheurs `template` avec `for:`, et un tel déclencheur
+    ne tire que sur une *transition* du template vers vrai : s'il est déjà vrai
+    quand le déclencheur est attaché, il ne tire jamais.
+
+    **Mesuré le 06/09, avec contre-épreuve.** Instance Douche, cible 22 % :
+    automation éteinte, volume porté à 60 %, automation rallumée — ce qui
+    ré-attache les déclencheurs exactement comme au démarrage, template déjà
+    vrai. Après 70 s (watchdog_seconds = 30), volume toujours à 60 % et
+    `last_triggered` inchangé depuis la veille : l'automation n'avait pas
+    tourné. Contre-épreuve immédiate : volume porté à 50 %, `vol_drift` tire,
+    correction à 22 % en quelques secondes. L'automation fonctionne donc
+    parfaitement — c'est bien l'armement du déclencheur `template` qui est en
+    cause, et rien d'autre.
+
+    **Ce que ça laissait passer.** Une dérive de volume qui survit à un
+    redémarrage de HA n'était corrigée par personne : ni le watchdog, ni
+    l'escalade. Il ne restait que la dérive événementielle, qui exige un
+    *nouveau* changement de volume. Silence complet, y compris sur le canal
+    d'alerte prévu pour ça. Scénario concret : une coupure réseau dégrade
+    AirPlay, le volume dérive, HA redémarre dans l'intervalle.
+
+    **Correctif** — un déclencheur `homeassistant: start`, routé vers la
+    branche watchdog qui re-vérifie déjà elle-même que le volume est hors
+    cible : au démarrage, si tout va bien, la condition est fausse et rien ne
+    se passe. Un délai de `watchdog_seconds` précède la vérification, et
+    uniquement pour ce déclencheur-là : quand HA annonce `start`, l'intégration
+    du lecteur peut encore être en cours de connexion et l'entité
+    `unavailable`, auquel cas la vérification tomberait dans le vide.
+    C'est le même motif que la v5.11 de `threshold_alert.yaml`, éprouvé au banc
+    sur ce blueprint frère.
+
+    **Trouvé par l'audit externe du 05→06/09** (constat 05), qui l'avait
+    correctement identifié comme un écart de couverture — cinq automations
+    portaient déjà la leçon, celle-ci non — mais classé le mécanisme en
+    *supposé*. La mesure ci-dessus le fait passer en *mesuré*.
+
     **Changelog v1.5 (05/09/2026) :** correctif — **l'escalade « volume bloqué »
     etait le seul fan-out de notification de l'installation sans
     `continue_on_error`, et c'est une boucle sequentielle.**
@@ -337,6 +375,16 @@ triggers:
     to: "on"
     id: sleep_on
 
+  # v1.6 — Reprise au demarrage. Les deux declencheurs `template` ci-dessous
+  # ne s'arment PAS si leur template est deja vrai au moment ou ils sont
+  # attaches : mesure du 06/09/2026, contre-epreuve incluse. Sans ce
+  # declencheur, un volume deja hors cible au demarrage de HA n'etait jamais
+  # corrige — ni par le watchdog, ni par l'escalade — et il ne restait que la
+  # derive evenementielle, qui exige un NOUVEAU changement de volume.
+  - trigger: homeassistant
+    event: start
+    id: demarrage
+
   # Watchdog : se déclenche UNIQUEMENT si le volume reste hors cible en continu
   # pendant la durée configurée. Un `time_pattern` ferait le même travail, mais
   # créerait une exécution (et une trace) à chaque intervalle même quand tout va
@@ -396,7 +444,26 @@ actions:
       - alias: Watchdog - rattrape une derive dont l'evenement s'est perdu
         conditions:
           - condition: trigger
-            id: watchdog
+            id:
+              - watchdog
+              - demarrage
+        sequence:
+          # v1.6 — au demarrage seulement : laisser l'integration du lecteur
+          # se connecter avant de juger. Quand HA annonce `start`, apple_tv
+          # peut encore etre en cours de connexion et l'entite `unavailable` ;
+          # la verification tomberait alors dans le vide. On reutilise
+          # watchdog_seconds plutot qu'une valeur en dur : c'est deja le delai
+          # que l'instance juge acceptable avant de corriger.
+          - if:
+              - condition: trigger
+                id: demarrage
+            then:
+              - delay:
+                  seconds: !input watchdog_seconds
+          # La verification est DANS la sequence et non dans `conditions:`,
+          # parce qu'elle doit etre faite APRES le delai. Pour le declencheur
+          # watchdog le comportement est inchange : il l'evalue juste un cran
+          # plus tard, et une condition fausse arrete la sequence.
           - condition: template
             value_template: >
               {% set st = states(media_player_entity) %}
@@ -404,7 +471,6 @@ actions:
               {{ st in ['playing', 'paused', 'idle']
                  and v is not none
                  and (v - (target_volume_pct | float(25) / 100)) | abs > 0.001 }}
-        sequence:
           - action: media_player.volume_set
             target:
               entity_id: !input media_player_entity
