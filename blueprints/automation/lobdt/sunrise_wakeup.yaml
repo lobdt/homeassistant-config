@@ -3,7 +3,7 @@ blueprint:
   description: >
     # 🌅 Simulateur d'Aube — Réveil Progressif
 
-    **Version: 1.6**
+    **Version: 1.7**
 
 
     Monte progressivement la luminosité et la température de couleur pour simuler
@@ -29,6 +29,8 @@ blueprint:
       s'arrête
     - **Actions pré et post** lever optionnelles
     - **Sélection de jours** de la semaine
+    - **Lever anticipé (optionnel)** : un `input_button` lance les actions après
+      le lever sans toucher aux lampes, et saute le réveil du jour
 
 
     ## 🔬 Paramètres scientifiques par défaut
@@ -43,6 +45,36 @@ blueprint:
     - `input_datetime` (heure seule) pour l'heure de réveil
     - `input_boolean` pour activer/désactiver
     - Lumière avec support luminosité + température de couleur
+
+
+    **Changelog v1.7 :** nouvel input optionnel **Bouton de lever anticipé**
+    (`wake_now_button`, section 7️⃣, vide par défaut). Sans lui, **aucune instance
+    existante ne change de comportement**, à une exception près : un déclenchement
+    pendant un run en cours n'écrit plus d'avertissement dans le journal
+    (`max_exceeded: silent`), car ce cas devient normal avec le bouton.
+
+
+    Le besoin vient du 31/10/2026 : levé avant l'heure, le foyer a ouvert le store
+    à la main, et le réveil l'a redescendu de 100 à 37 % à la fin de la rampe.
+
+
+    1. **Avant la rampe :** les actions après le lever partent aussitôt, sans
+    allumer aucune lampe, et le réveil du jour est sauté. Le réveil du lendemain
+    ne dépend d'aucune remise à zéro : seule la date de la pression compte.
+
+
+    2. **Pendant la rampe :** elle s'arrête au pas suivant. La fin de séquence
+    habituelle s'enchaîne, sans la finalisation à pleine puissance : Adaptive
+    Lighting reprend directement.
+
+
+    3. **Changer l'heure de réveil après la pression réarme le réveil du jour**,
+    pour pouvoir se recoucher. Un redémarrage de HA a le même effet : en cas de
+    doute, le réveil sonne.
+
+
+    Le mode `single` ignore une pression pendant le délai d'extinction
+    automatique : le lever a déjà eu lieu, il n'y a rien à refaire.
 
 
     **Changelog v1.6 :** correctif — **un réveil entier pouvait être annulé par
@@ -507,9 +539,39 @@ blueprint:
           selector:
             action: {}
 
+    # ─────────────────────────────────────────────────────
+    section_wake_now:
+      name: 7️⃣ Lever anticipé (optionnel)
+      icon: mdi:alarm-check
+      collapsed: true
+      input:
+        wake_now_button:
+          name: Bouton de lever anticipé
+          description: >
+            Helper `input_button` à presser quand on se lève avant le réveil.
+
+            Exécute aussitôt les actions après le lever, sans toucher aux lampes,
+            et saute le réveil du jour. Pressé pendant la rampe, il l'arrête au
+            pas suivant.
+
+            Changer l'heure de réveil après la pression réarme le réveil du jour.
+
+            Laisser vide si non utilisé.
+          default: []
+          selector:
+            entity:
+              filter:
+                - domain: input_button
+
 mode: single
+# Une pression sur le bouton de lever anticipé pendant un run est un cas normal :
+# la rampe la détecte elle-même, le déclenchement ignoré n'a rien à journaliser.
+max_exceeded: silent
 
 variables:
+  alarm_time: !input alarm_time
+  wake_now_button: !input wake_now_button
+  has_wake_now: "{{ wake_now_button | default([]) | length > 0 }}"
   duration_number: !input duration_number
   duration_min: "{{ states(duration_number) | int(25) }}"
   start_brightness: !input start_brightness
@@ -541,18 +603,55 @@ variables:
 trigger:
   - platform: time
     at: !input start_sensor
+  - platform: state
+    entity_id: !input wake_now_button
+    # `unknown` n'est pas filtré : c'est l'état d'un bouton jamais pressé, le
+    # filtrer ignorerait la toute première pression.
+    not_from: unavailable
+    id: wake_now
 
 condition:
-  # Vérifier que le boolean est activé
-  - condition: state
-    entity_id: !input enabled_boolean
-    state: "on"
-  # Vérifier le jour de la semaine
-  - condition: template
-    value_template: >
-      {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
+  - condition: or
+    conditions:
+      # Le lever anticipé agit même réveil désactivé : on est debout de toute façon
+      - condition: trigger
+        id: wake_now
+      - condition: and
+        conditions:
+          # Vérifier que le boolean est activé
+          - condition: state
+            entity_id: !input enabled_boolean
+            state: "on"
+          # Vérifier le jour de la semaine
+          - condition: template
+            value_template: >
+              {{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}
+          # Sauter le réveil si le lever anticipé a été pressé aujourd'hui, sauf si
+          # l'heure de réveil a été changée depuis
+          - condition: template
+            value_template: >
+              {% set pressed = as_datetime(states(wake_now_button), none) if has_wake_now else none %}
+              {{ pressed is none
+                 or as_local(pressed).date() != now().date()
+                 or states[alarm_time].last_changed > pressed }}
 
 action:
+  # 0. Lever anticipé hors rampe : seulement les actions post-lever, aucune lampe.
+  #    Pendant une rampe, le mode `single` ignore ce déclenchement : c'est la
+  #    garde `while` du §5 qui détecte la pression.
+  - if:
+      - condition: trigger
+        id: wake_now
+    then:
+      - choose: []
+        default: !input post_sunrise_actions
+      - stop: Lever anticipé — pas de rampe
+    alias: Lever anticipé hors rampe
+
+  # État du bouton au départ du run, pour détecter une pression pendant la rampe
+  - variables:
+      wake_now_at_start: "{{ states(wake_now_button) if has_wake_now else '' }}"
+
   # 1. Couper le(s) switch(s) AL — AL ne touche plus les lampes pendant le lever
   - if:
       - condition: template
@@ -708,6 +807,9 @@ action:
             n'a jamais démarré, la rampe se déroule quand même — la 2e lampe fait
             le lever, et la lampe 1 rejoindra d'elle-même si la radio revient
             (les light.turn_on continuent d'être émis à chaque pas).
+        - condition: template
+          value_template: "{{ not has_wake_now or states(wake_now_button) == wake_now_at_start }}"
+          alias: v1.7 — Lever anticipé pressé pendant la rampe, arrêt au pas suivant
       sequence:
         - variables:
             l1_pct_now: >
@@ -771,8 +873,11 @@ action:
         - delay:
             seconds: "{{ step_interval }}"
 
+  # Rampe écourtée par le lever anticipé : pas de finalisation à pleine puissance
+  - variables:
+      wake_now_pressed: "{{ has_wake_now and states(wake_now_button) != wake_now_at_start }}"
+
   # 6. Réactiver AL + désactiver bypass — TOUJOURS (même si abort par extinction manuelle)
-  #    Placé avant la condition bloquante ci-dessous pour garantir le nettoyage.
   - if:
       - condition: template
         value_template: "{{ al_switch | default([]) | length > 0 }}"
@@ -813,6 +918,8 @@ action:
   #    Transformée en `if/then` : la lampe 1 est finalisée si elle répond, et la
   #    séquence continue dans tous les cas.
   - if:
+      - condition: template
+        value_template: "{{ not wake_now_pressed }}"
       - condition: state
         entity_id: !input light_entity
         state: "on"
@@ -830,7 +937,7 @@ action:
   #       100% — c'est justement le but : respecter son plafond confortable)
   - if:
       - condition: template
-        value_template: "{{ has_light_2 }}"
+        value_template: "{{ has_light_2 and not wake_now_pressed }}"
       - condition: state
         entity_id: !input light_entity_2
         state: "on"
@@ -874,9 +981,8 @@ action:
 
   # 10. Extinction automatique différée (v1.5) — optionnelle, 0 = désactivée
   #     Placée en toute fin volontairement : les actions post-lever ont déjà
-  #     tourné, et si la lampe principale avait été éteinte manuellement, la
-  #     condition bloquante de l'étape 7 aurait déjà arrêté la séquence — donc
-  #     arriver ici signifie que la rampe est allée au bout.
+  #     tourné. Depuis la v1.6, on arrive ici même si la rampe a été interrompue ;
+  #     les gardes ci-dessous n'éteignent que ce qui est encore allumé.
   - alias: Extinction automatique différée après le lever (optionnel)
     if:
       - condition: template
