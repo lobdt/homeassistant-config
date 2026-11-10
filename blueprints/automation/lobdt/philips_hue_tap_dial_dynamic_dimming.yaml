@@ -1,9 +1,20 @@
 # =============================================================================
 #  Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT)
-#  Version : 2.6.1  —  09/08/2026
+#  Version : 2.6.2  —  10/11/2026
 #
 #  CHANGELOG
-#  2.6.1 - Fix bug reproductible : ref_current_pct plantait
+#  2.6.2 - Fix regression HA 2026.11 : chaque appui de BOUTON plantait
+#          ("Error rendering variables: UndefinedError: 'dict object' has
+#          no attribute 'action_step_size'"), donc aucune action bouton ne
+#          partait (store, lumiere, clim, lit). Seule la rotation envoie
+#          action_step_size. Avant la MAJ du 09/11/2026, `Undefined | int(0)`
+#          rendait 0 ; en 2026.11.0, int()/float() levent une erreur sur
+#          Undefined (la valeur par defaut ne couvre plus que les valeurs
+#          non convertibles). raw_step passe a `| default(0) | int(0)` :
+#          default() rattrape le champ absent, int(0) le champ null ou
+#          vide. Verifie live : bouton -> 0, rotation 37 -> 37, null -> 0,
+#          "" -> 0. Calcul de rotation inchange.
+#  2.6.1 -Fix bug reproductible : ref_current_pct plantait
 #          ("int got invalid input 'None'") quand l'attribut brightness de
 #          ref_entity est absent (lampe eteinte sans brightness stocke).
 #          `| default(0) | int` ne rattrape pas un None reel (default ne
@@ -38,11 +49,11 @@
 #  (intercept=true), peu importe ce que ce blueprint calcule.
 # =============================================================================
 blueprint:
-  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.6.1
+  name: Hue Tap Dial - Dimming Dynamique Multi-Lampes (Z2M / MQTT) v2.6.2
   description: >
     # 🎛️ Philips Hue Tap Dial — Dimming Dynamique via MQTT
 
-    **Version 2.6.1**
+    **Version: 2.6.2**
 
     Blueprint maison pour piloter un **Philips Hue Tap Dial Switch** via
     Zigbee2MQTT, avec un **dimming dynamique à courbe cubique**.
@@ -322,7 +333,7 @@ variables:
   normalize: !input step_normalize
 
   act: "{{ trigger.payload_json.action | default('') }}"
-  raw_step: "{{ trigger.payload_json.action_step_size | int(0) }}"
+  raw_step: "{{ trigger.payload_json.action_step_size | default(0) | int(0) }}"
   direction: "{{ 'up' if act == 'brightness_step_up' else 'down' }}"
   selected: "{{ states(selector_entity) }}"
   norm: "{{ ([raw_step, normalize | int] | min) / (normalize | int) }}"
